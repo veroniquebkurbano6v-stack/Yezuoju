@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>StoryRag MVP</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; }
+    .row { margin-bottom: 12px; }
+    label { display: inline-block; width: 100px; }
+    textarea { width: 100%; height: 120px; }
+    pre { background: #f4f4f4; padding: 12px; border-radius: 6px; white-space: pre-wrap; }
+    .citations { margin-top: 12px; }
+    .citation { margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+  <h2>中日英童话 RAG (MVP)</h2>
+
+  <div class="row">
+    <label for="language">语言</label>
+    <select id="language">
+      <option value="">自动检测</option>
+      <option value="Chinese">Chinese</option>
+      <option value="English">English</option>
+      <option value="Japanse">Japanse</option>
+    </select>
+    <span id="detected" style="margin-left: 12px; color: #666;"></span>
+  </div>
+
+  <div class="row">
+    <label for="mode">模式</label>
+    <select id="mode">
+      <option value="library">全库</option>
+      <option value="single">单书</option>
+    </select>
+    <select id="book" disabled style="width: 340px; margin-left: 8px;">
+      <option value="">请选择书籍(.txt)</option>
+    </select>
+  </div>
+
+  <div class="row">
+    <label for="query">问题</label>
+  </div>
+  <div class="row">
+    <textarea id="query" placeholder="请输入你的问题"></textarea>
+  </div>
+
+  <div class="row">
+    <button id="ask">提问</button>
+    <span id="status" style="margin-left: 12px; color: #555;"></span>
+  </div>
+
+  <div class="row">
+    <h3>模型回复</h3>
+    <pre id="answer"></pre>
+  </div>
+
+  <div class="row citations">
+    <h4>引用片段</h4>
+    <div id="cites"></div>
+  </div>
+
+  <script>
+    const askBtn = document.getElementById('ask');
+    const statusEl = document.getElementById('status');
+    const answerEl = document.getElementById('answer');
+    const citesEl = document.getElementById('cites');
+    const languageEl = document.getElementById('language');
+    const modeEl = document.getElementById('mode');
+    const bookEl = document.getElementById('book');
+    const detectedEl = document.getElementById('detected');
+    let booksMap = {};
+
+    async function loadBooks() {
+      try {
+        const resp = await fetch('/api/books');
+        booksMap = await resp.json();
+        refreshBookOptions(); // refresh once data arrives
+      } catch (e) {
+        console.warn('无法加载书目列表', e);
+      }
+    }
+
+    function refreshBookOptions() {
+      const lang = languageEl.value;
+      bookEl.innerHTML = '<option value="">请选择书籍</option>';
+      if (!lang || !booksMap[lang]) {
+        bookEl.disabled = true;
+        return;
+      }
+      for (const name of booksMap[lang]) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        bookEl.appendChild(opt);
+      }
+      bookEl.disabled = modeEl.value !== 'single';
+    }
+
+    languageEl.onchange = refreshBookOptions;
+    modeEl.onchange = () => {
+      if (modeEl.value === 'single') {
+        if (!languageEl.value) {
+          statusEl.textContent = '单书模式请先选择语言';
+        }
+        bookEl.disabled = !languageEl.value;
+      } else {
+        bookEl.disabled = true;
+      }
+    };
+
+    askBtn.onclick = async () => {
+      const query = document.getElementById('query').value.trim();
+      const language = languageEl.value || null;
+      const mode = modeEl.value;
+      const book = bookEl.value || null;
+
+      if (!query) {
+        alert('请先输入问题');
+        return;
+      }
+      if (mode === 'single' && !language) {
+        alert('单书模式下请先选择语言');
+        return;
+      }
+
+      statusEl.textContent = '请求中...';
+      answerEl.textContent = '';
+      citesEl.innerHTML = '';
+      detectedEl.textContent = '';
+
+      try {
+        const resp = await fetch('/api/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query, language, mode, book })
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          throw new Error(err.detail || resp.statusText);
+        }
+        const data = await resp.json();
+        answerEl.textContent = data.answer || '';
+        if (data.detected_language) {
+          detectedEl.textContent = `检测到语言：${data.detected_language}`;
+        }
+        if (data.citations) {
+          for (const c of data.citations) {
+            const div = document.createElement('div');
+            div.className = 'citation';
+            div.innerHTML = `<b>[${c.citation}]</b> ${c.text}`;
+            citesEl.appendChild(div);
+          }
+        }
+        statusEl.textContent = '完成';
+      } catch (e) {
+        statusEl.textContent = '失败';
+        answerEl.textContent = `错误: ${e.message}`;
+      }
+    };
+
+    loadBooks();
+  </script>
+</body>
+</html>
+
