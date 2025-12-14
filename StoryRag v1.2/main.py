@@ -15,7 +15,7 @@ load_dotenv()
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Story RAG (Chinese/English/Japanse)")
+    parser = argparse.ArgumentParser(description="Story RAG (Chinese/English/Japan)")
     parser.add_argument("query", help="Question to ask about the stories")
     parser.add_argument(
         "--language",
@@ -56,15 +56,15 @@ def main() -> int:
             elif code.startswith("en"):
                 language = "English"
             elif code.startswith("ja"):
-                language = "Japanse"
-        except Exception:  # noqa: BLE001
+                language = "Japan"
+        except Exception:
             # 如果检测失败，设置语言为None
             language = None
     try:
         # 加载语料库：如果未指定语言，则加载所有语言的数据（使用向量检索 + reranker 混排）
         load_all = language is None
         chunks = load_corpus(language=language, mode=args.mode, book_name=args.book, load_all_languages=load_all)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         # 加载失败时打印错误信息并返回错误码1
         print(f"加载语料失败: {exc}")
         return 1

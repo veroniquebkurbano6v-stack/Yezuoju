@@ -9,5 +9,9 @@ uvicorn>=0.30.0
 langdetect>=1.0.9
 sentence-transformers>=2.2.0
 torch>=2.0.0
+# Vector database
+faiss-cpu>=1.7.0
+# Chroma (备用)
+# chromadb==0.4.22
 # Reranker support (CrossEncoder is included in sentence-transformers)
 

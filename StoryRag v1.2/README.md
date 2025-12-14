@@ -26,6 +26,9 @@ StoryRag v1.1/
 ├── rag.py               # RAG核心实现
 ├── requirements.txt     # 项目依赖
 ├── frontend/            # Web前端文件
+│   ├── src/            # Vue 3 前端源码
+│   ├── index.html      # HTML 模板
+│   └── package.json    # 前端依赖配置
 └── Ragdate/             # 数据目录
     ├── Chinese/         # 中文童话故事
     ├── English/         # 英文童话故事
@@ -52,7 +55,7 @@ StoryRag v1.1/
    #创建虚拟环境
    python -m venv venv
    # 激活虚拟环境（Windows）,在项目目录(StoryRag下)的命令行中进行
-   .venv\Scripts\activate
+   venv\Scripts\activate
 
    ```
 
@@ -63,7 +66,7 @@ StoryRag v1.1/
    #如外网缓慢可选国内镜像
    pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
    ```
-   注:这步进行时可能出现pip版本升级提醒，需先退出当前虚拟环境，运行如下命令
+   注:这步进行时可能出现pip版本升级提醒，需先在当前虚拟环境，运行如下命令
    ```bash
    python -m pip install --upgrade pip -i https://mirrors.aliyun.com/pypi/simple/
    ```
@@ -111,10 +114,43 @@ StoryRag v1.1/
 
 3. **单书模式**
    ```bash
-   python main.py --mode single --book xiaowangzi.txt "主人公是谁？"
+   python main.py --mode single --book 小王子.txt "主人公是谁？"
    ```
 
 ### Web界面
+
+#### 方式一：使用 Vue 前端（推荐）
+
+1. **安装前端依赖**
+   ```bash
+   cd frontend
+   npm install
+   # 或使用国内镜像
+   npm install --registry=https://registry.npmmirror.com
+   ```
+
+2. **启动后端服务**
+   ```bash
+   # 在项目根目录
+   uvicorn api:app --reload --port 8000
+   ```
+
+3. **启动前端开发服务器**
+   ```bash
+   # 在 frontend 目录
+   npm run dev
+   ```
+
+4. **访问界面**
+
+   打开浏览器访问 `http://localhost:3000`
+
+   - 现代化的 Vue 3 界面，美观易用
+   - 支持响应式设计，适配移动端和桌面端
+   - 实时查询状态反馈
+   - 优雅的动画效果
+
+#### 方式二：使用简单 HTML 界面
 
 1. **启动服务**
    ```bash
