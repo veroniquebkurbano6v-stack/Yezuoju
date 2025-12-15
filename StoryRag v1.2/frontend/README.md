@@ -28,7 +28,7 @@ uvicorn api:app --reload --port 8000
 ```
 
 ### 第四步：启动前端开发服务器
-
+#这步要在frontend下进行
 ```bash
 npm run dev
 ```
