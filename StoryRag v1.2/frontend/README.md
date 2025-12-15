@@ -22,7 +22,7 @@ npm install --registry=https://registry.npmmirror.com
 ```
 
 ### 第三步：启动后端服务
-在项目根目录（StoryRag v1.1）下运行：
+在项目根目录（StoryRag v1.2）下运行：
 ```bash
 uvicorn api:app --reload --port 8000
 ```

@@ -349,6 +349,7 @@ class RagIndexer:
             convert_to_numpy=True,
             normalize_embeddings=True
         )# 返回的形状为(向量模型的嵌入维度,)
+        # 这里转二维数组是因为embedding_model.encode()中query只有一条查询语句,其返回值为一维数组，为了配合faiss_index.search()的输入格式，需要将其转换为二维数组
         query_embedding = query_embedding.reshape(1, -1)  # 转换为二维数组
         
         # 从 FAISS 索引获取候选
@@ -394,13 +395,13 @@ class RagIndexer:
             vec_norm = np.zeros_like(vec_scores)
             
         # 归一化 reranker 分数（softmax 到 0-1）
-        rerank_arr = np.array(rerank_scores, dtype=float)
-        rerank_exp = np.exp(rerank_arr - rerank_arr.max())
-        rerank_norm = rerank_exp / rerank_exp.sum()
+        rerank_arr = np.array(rerank_scores, dtype=float) #将reranker返回的分数列表转换为Numpy浮点数组
+        rerank_exp = np.exp(rerank_arr - rerank_arr.max()) #对reranker分数进行指数运算，并减去最大值以防止溢出
+        rerank_norm = rerank_exp / rerank_exp.sum() #将指数运算后的分数归一化到0-1区间
         
         # 按比例混合得到最终得分
-        alpha = max(0.0, min(1.0, RERANK_MIX_ALPHA))
-        final_scores = alpha * rerank_norm + (1 - alpha) * vec_norm
+        alpha = max(0.0, min(1.0, RERANK_MIX_ALPHA)) #获取reranker和向量检索之前的比例
+        final_scores = alpha * rerank_norm + (1 - alpha) * vec_norm #按比例混合分数
         
         reranked = [
             (chunk, float(score))
@@ -486,7 +487,7 @@ class RagIndexer:
 def build_prompt(query: str, hits: List[Tuple[Chunk, float]]) -> str:
     citation_blocks = []
     for chunk, score in hits:
-        citation_blocks.append(f"[{chunk.citation}] (sim={score:.2f})\n{chunk.text}")
+        citation_blocks.append(f"[{chunk.citation}] (sim={score:.2f})\n{chunk.text}") #保存引用文本块的来源分数及内容
     context = "\n\n".join(citation_blocks)
     return (
         "You are a helpful assistant answering questions about children's stories. "
@@ -502,20 +503,20 @@ def generate_answer(
         answer_language: str | None = None,
         lang_filter: str | None = None,
 ) -> Tuple[str, List[Chunk]]: #返回一个元组，包含生成的回答和对应的文本块列表
-    hits = index.search_faiss(query, top_k=TOP_K, lang_filter=lang_filter)
-    prompt = build_prompt(query, hits)
+    hits = index.search_faiss(query, top_k=TOP_K, lang_filter=lang_filter) #返回检索分数最高的前TOP_K个文本块
+    prompt = build_prompt(query, hits) #构建提示字符串（包含检索的文本块及问题）
     lang_instr = (
         ""
         if not answer_language
         else f" Please respond in {answer_language}."
-    )
+    ) #指定回答语言
     messages = [
         {
             "role": "system",
-            "content": "You are a concise bilingual assistant." + lang_instr,
+            "content": "You are a concise bilingual assistant. Default to responding in Chinese unless otherwise specified."+ lang_instr,
         },
         {"role": "user", "content": prompt},
-    ]
-    reply = client.chat_completion(messages)
+    ] #创建一个消息列表，遵循OpenAI API的消息格式
+    reply = client.chat_completion(messages) #发送消息给语言模型
     ordered_chunks = [chunk for chunk, _ in hits]
     return reply, ordered_chunks

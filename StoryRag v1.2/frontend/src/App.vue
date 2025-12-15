@@ -38,7 +38,7 @@
                   <el-option label="自动检测" value="" />
                   <el-option label="中文 (Chinese)" value="Chinese" />
                   <el-option label="英文 (English)" value="English" />
-                  <el-option label="日文 (Japanse)" value="Japanse" />
+                  <el-option label="日文 (Japan)" value="Japan" />
                 </el-select>
                 <el-tag v-if="detectedLanguage" type="success" class="detected-tag">
                   <el-icon><Check /></el-icon>
@@ -331,6 +331,7 @@ const handleRefreshIndex = async () => {
     refreshing.value = true
     
     const params = {
+      query:"",
       language: queryForm.language || null,
       mode: queryForm.mode,
       book: queryForm.book || null
