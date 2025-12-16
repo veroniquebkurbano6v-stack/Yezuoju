@@ -58,6 +58,7 @@ export const getBooksAPI = () => {
  * @param {string} params.mode - 模式：'library' 或 'single'
  * @param {string|null} params.book - 书籍名称（单书模式时必需）
  * @param {boolean} params.refresh_index - 是否刷新索引（可选）
+ * @param {string|null} params.search_lang - 搜索语言（可选，与查询语言无关）
  * @returns {Promise<Object>} 返回答案和引用
  */
 export const queryAPI = (params) => {

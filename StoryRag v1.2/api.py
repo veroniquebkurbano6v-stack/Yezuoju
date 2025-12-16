@@ -24,6 +24,7 @@ class QueryRequest(BaseModel):
     mode: str = Field("library", description="library or single")
     book: Optional[str] = Field(None, description="File name when mode=single")
     refresh_index: bool = Field(False, description="Whether to refresh the vector index")
+    search_lang: Optional[str] = Field(None, description="Language to search in (independent of query language)")
 
 
 class Citation(BaseModel):
@@ -173,22 +174,25 @@ def create_app() -> FastAPI:
     @app.post("/api/query", response_model=QueryResponse)
     def query_rag(payload: QueryRequest) -> QueryResponse:
         # 检测查询语言，如果没有指定则自动检测
-        lang = payload.language or detect_language(payload.query)
+        doc_lang = payload.language or detect_language(payload.query)
         # 如果是单本书查询模式且未指定语言，尝试从书中获取语言信息
-        if payload.mode == "single" and payload.book and not lang:
-            lang = find_book_language(payload.book) or lang
+        if payload.mode == "single" and payload.book and not doc_lang:
+            doc_lang = find_book_language(payload.book) or doc_lang
 
         try:
             # 默认加载所有语言的数据，使用向量数据库检索 + reranker 混排
             load_all = payload.language is None  # 如果未指定语言，则加载所有语言
-            index = _load_index(lang, payload.mode, payload.book, load_all_languages=load_all, refresh=payload.refresh_index)
+            index = _load_index(doc_lang, payload.mode, payload.book, load_all_languages=load_all, refresh=payload.refresh_index)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=f"加载语料失败: {exc}") from exc
 
         client = DeepSeekClient()
         try:
-            # 使用语言过滤器进行搜索
-            answer, contexts = generate_answer(payload.query, index, client, answer_language=lang, lang_filter=lang)
+            # 使用文档语言进行搜索，如果没有指定文档语言，则使用自动检测的语言
+            doc_lang = payload.language or detect_language(payload.query)
+            # 用户语言由search_lang参数指定，如果没有指定，则使用文档语言
+            user_lang = payload.search_lang or doc_lang
+            answer, contexts = generate_answer(payload.query, index, client, answer_language=user_lang, lang_filter=doc_lang)
         except DeepSeekError as exc:
             raise HTTPException(status_code=502, detail=f"调用 DeepSeek 失败: {exc}") from exc
         except Exception as exc:  # noqa: BLE001
@@ -198,7 +202,9 @@ def create_app() -> FastAPI:
             Citation(citation=c.citation, text=c.text[:500])  # limit length for payload
             for c in contexts
         ]
-        return QueryResponse(answer=answer, citations=citations, detected_language=lang)
+        # 检测回答语言，如果没有指定则自动检测
+        detected_user_lang = payload.search_lang or detect_language(payload.query)
+        return QueryResponse(answer=answer, citations=citations, detected_language=detected_user_lang)
 
     static_dir = os.path.join(os.path.dirname(__file__), "frontend")
     if os.path.isdir(static_dir):

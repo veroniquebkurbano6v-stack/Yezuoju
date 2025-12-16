@@ -33,11 +33,11 @@ CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "700"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "120"))
 TOP_K = int(os.getenv("TOP_K", "4"))
 # 向量检索获取的候选数量（用于 reranker 重排序）
-VECTOR_TOP_K = int(os.getenv("VECTOR_TOP_K", "20"))
+VECTOR_TOP_K = int(os.getenv("VECTOR_TOP_K", "30"))
 # 嵌入模型名称（支持多语言）
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
 # Reranker 模型名称
-RERANKER_MODEL = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-base")
+RERANKER_MODEL = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
 # reranker 与向量相似度的混合比例（最终得分 = alpha * rerank_norm + (1-alpha) * vector_norm）
 RERANK_MIX_ALPHA = float(os.getenv("RERANK_MIX_ALPHA", "0.7"))
 

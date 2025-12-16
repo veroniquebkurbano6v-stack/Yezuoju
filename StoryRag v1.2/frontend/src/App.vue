@@ -24,16 +24,14 @@
                 <span>问题查询</span>
               </div>
             </template>
-
-            <!-- 语言选择 -->
-            <el-form :model="queryForm" label-width="100px" class="query-form">
-              <el-form-item label="语言选择">
+              <!-- 搜索语言选择 -->
+              <el-form-item label="回答语言选择">
                 <el-select
-                  v-model="queryForm.language"
+                  v-model="queryForm.search_lang"
                   placeholder="自动检测语言"
                   clearable
                   style="width: 200px"
-                  @change="handleLanguageChange"
+                  @change="handleSearchLanguageChange"
                 >
                   <el-option label="自动检测" value="" />
                   <el-option label="中文 (Chinese)" value="Chinese" />
@@ -44,8 +42,25 @@
                   <el-icon><Check /></el-icon>
                   检测到: {{ detectedLanguage }}
                 </el-tag>
+                <el-tooltip content="指定回答的语言，与文档语言无关" placement="top">
+                  <el-icon class="info-icon"><InfoFilled /></el-icon>
+                </el-tooltip>
               </el-form-item>
-
+            <!-- 语言选择 -->
+            <el-form :model="queryForm" label-width="100px" class="query-form">
+              <el-form-item label="文档语言选择">
+                <el-select
+                  v-model="queryForm.language"
+                  placeholder="请选择文档语言"
+                  clearable
+                  style="width: 200px"
+                  @change="handleLanguageChange"
+                >
+                  <el-option label="中文 (Chinese)" value="Chinese" />
+                  <el-option label="英文 (English)" value="English" />
+                  <el-option label="日文 (Japan)" value="Japan" />
+                </el-select>
+              </el-form-item>
               <!-- 查询模式 -->
               <el-form-item label="查询模式">
                 <el-radio-group v-model="queryForm.mode" @change="handleModeChange">
@@ -62,7 +77,7 @@
                   v-if="queryForm.mode === 'single'"
                   v-model="queryForm.book"
                   placeholder="请选择书籍"
-                  :disabled="!queryForm.language || bookList.length === 0"
+                  :disabled="!searchLanguageForBooks || bookList.length === 0"
                   style="width: 300px; margin-left: 16px"
                   filterable
                 >
@@ -194,7 +209,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   Reading,
@@ -208,15 +223,17 @@ import {
   Collection,
   Document,
   CircleCheck,
-  Link
+  Link,
+  InfoFilled
 } from '@element-plus/icons-vue'
 import { queryAPI, getBooksAPI, refreshIndexAPI } from './api'
-
+// reactivw
 const queryForm = reactive({
   query: '',
   language: '',
   mode: 'library',
-  book: null
+  book: null,
+  search_lang: '' // 搜索语言
 })
 
 const loading = ref(false)
@@ -238,14 +255,20 @@ const loadBooks = async () => {
   }
 }
 
+// 计算用于选择书籍的语言（使用文档语言）
+const searchLanguageForBooks = computed(() => {
+  return queryForm.language
+})
+
 // 更新书籍列表
 const updateBookList = () => {
-  if (queryForm.language && booksMap.value[queryForm.language]) {
-    bookList.value = booksMap.value[queryForm.language]
+  const lang = searchLanguageForBooks.value
+  if (lang && booksMap.value[lang]) {
+    bookList.value = booksMap.value[lang]
   } else {
     bookList.value = []
   }
-  if (queryForm.mode === 'single' && bookList.value.length === 0 && queryForm.language) {
+  if (queryForm.mode === 'single' && bookList.value.length === 0 && lang) {
     ElMessage.warning('该语言暂无可用书籍')
   }
 }
@@ -253,6 +276,14 @@ const updateBookList = () => {
 // 语言改变处理
 const handleLanguageChange = () => {
   detectedLanguage.value = ''
+  updateBookList()
+  if (queryForm.mode === 'single') {
+    queryForm.book = null
+  }
+}
+
+// 搜索语言改变处理
+const handleSearchLanguageChange = () => {
   updateBookList()
   if (queryForm.mode === 'single') {
     queryForm.book = null
@@ -294,7 +325,8 @@ const handleSubmit = async () => {
       query: queryForm.query.trim(),
       language: queryForm.language || null,
       mode: queryForm.mode,
-      book: queryForm.book || null
+      book: queryForm.book || null,
+      search_lang: queryForm.search_lang || null
     }
 
     const data = await queryAPI(params)
@@ -302,7 +334,7 @@ const handleSubmit = async () => {
     citations.value = data.citations || []
     detectedLanguage.value = data.detected_language || ''
 
-    if (data.detected_language && !queryForm.language) {
+    if (data.detected_language && !queryForm.search_lang) {
       ElMessage.success(`已自动检测语言: ${data.detected_language}`)
     }
 

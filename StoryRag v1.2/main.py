@@ -32,6 +32,11 @@ def parse_args() -> argparse.Namespace:
         "--book",
         help="File name inside the language folder when using --mode single",
     )
+    parser.add_argument(
+        "--search-lang",
+        choices=["Chinese", "English", "Japan"],
+        help="Language to search in (independent of query language)",
+    )
     return parser.parse_args()
 
 
@@ -75,7 +80,9 @@ def main() -> int:
     client = DeepSeekClient()
     try:
         # 生成答案并获取引用的上下文
-        answer, contexts = generate_answer(args.query, index, client, answer_language=language)
+        # 使用--search-lang参数指定检索语言，如果未指定则使用默认逻辑
+        lang_filter = getattr(args, "search_lang", None) or ("English" if language and language == "Chinese" else None)
+        answer, contexts = generate_answer(args.query, index, client, answer_language=language, lang_filter=lang_filter)
     except DeepSeekError as exc:
         # 调用 DeepSeek API 失败时打印错误信息并返回错误码1
         print(f"调用 DeepSeek 失败: {exc}")
