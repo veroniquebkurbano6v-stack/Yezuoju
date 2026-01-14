@@ -63,6 +63,8 @@ pdfminer.six>=20221105
 pdf2image>=1.16.3
 pytesseract>=0.3.10
 opencv-python>=4.9.0
+requests>=2.25.0
+PyMuPDF>=1.19.0
 
 # 可视化和调试 (matplotlib将在需要时单独安装)
 # seaborn>=0.13.0

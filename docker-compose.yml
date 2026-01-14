@@ -8,22 +8,26 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./backend:/app
-      - ../src/data:/app/data  # 映射数据目录
+      - ./backend/app:/app/app
+      - ./src:/app/src  # 映射核心Python脚本目录
+      - ./src/data:/app/src/data  # 映射数据目录
+      - ./run_agent.py:/app/run_agent.py  # 映射主运行脚本
     environment:
       - PYTHONUNBUFFERED=1
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
-      - VECTOR_DB_PATH=/app/data/vector_database
+      - VECTOR_DB_PATH=/app/src/data/vector_database
+      - PYTHONPATH=/app/src:/app/app
     restart: unless-stopped
     networks:
       - app-network
+    working_dir: /app
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
     ports:
-      - "8080:80"
+      - "3000:80"  # 前端映射到3000端口
     depends_on:
       - backend
     restart: unless-stopped

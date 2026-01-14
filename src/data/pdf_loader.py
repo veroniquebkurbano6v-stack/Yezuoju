@@ -166,6 +166,85 @@ class _PDFMinerBackend:
 class PDFLoader:
     """PDF加载器类，用于解析PDF文件并返回文本块"""
     
+    def _load_japanese_pdf(self, pdf_path: str, max_pages: Optional[int] = None) -> List[Page]:
+        """
+        从日语PDF提取文本块（从pdf_extractor.py迁移的逻辑）
+        
+        Args:
+            pdf_path: PDF文件路径
+            max_pages: 最大处理页数，默认处理所有页
+        
+        Returns:
+            页面列表
+        """
+        pages = []
+        
+        # 使用fitz打开PDF
+        doc = fitz.open(pdf_path)
+        
+        total_pages = len(doc)
+        end_page = max_pages if max_pages and max_pages < total_pages else total_pages
+        
+        print(f"正在处理日语PDF: {pdf_path}")
+        print(f"总页数: {total_pages}")
+        
+        for page_num in range(end_page):
+            page = doc[page_num]
+            
+            # 提取文本块信息（带位置）
+            blocks = page.get_text("blocks")
+            text_blocks = []
+            block_texts = []
+            
+            for block in blocks:
+                if block[6] == 0:  # 只处理文本块
+                    # 去掉文本块内的换行符，使文本连续
+                    clean_text = block[4].strip().replace('\n', '')
+                    
+                    # 计算文本块高度
+                    block_height = block[3] - block[1]
+                    
+                    # 排除单个数字的页码（通常在页面底部中间位置）
+                    if len(clean_text) <= 2 and clean_text.isdigit():
+                        # 检查是否在页面底部（y坐标大于500）
+                        if block[3] > 500:
+                            continue
+                    
+                    # 排除异常大的文本块（可能是PDF解析错误导致的合并块）
+                    # 正常标题高度应该在 20-80 像素之间
+                    if block_height > 200:  # 超过200像素认为是异常大块
+                        continue
+                    
+                    # 创建TextBlock对象
+                    text_block = TextBlock(
+                        text=clean_text,
+                        x0=block[0],
+                        y0=block[1],
+                        x1=block[2],
+                        y1=block[3],
+                        page_number=page_num + 1
+                    )
+                    text_blocks.append(text_block)
+                    block_texts.append(clean_text)
+            
+            # 用单个换行符连接不同文本块
+            page_text = "\n".join(block_texts)
+            
+            # 创建页面对象
+            page_obj = Page(
+                page_number=page_num + 1,
+                text_blocks=text_blocks,
+                language="Japanese"
+            )
+            pages.append(page_obj)
+            
+            print(f"  提取页面 {page_num + 1}/{end_page} - {len(page_text)} 字符, {len(text_blocks)} 个文本块")
+        
+        doc.close()
+        print(f"日语PDF处理完成，共 {len(pages)} 页")
+        
+        return pages
+    
     def load_pdf(self, pdf_path: str, max_pages: Optional[int] = None) -> List[Page]:
         """
         加载PDF文件并解析每一页的文本块
@@ -191,7 +270,8 @@ class PDFLoader:
         
         # 检查是否是日语PDF
         if language == "Japanese":
-            return []
+            # 调用日语PDF专用提取方法
+            return self._load_japanese_pdf(pdf_path, max_pages)
         else:
             # 执行原有中英文PDF处理逻辑
             pages = []

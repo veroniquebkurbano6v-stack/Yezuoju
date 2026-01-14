@@ -446,101 +446,45 @@ def process_pdf_to_page_titles(pdf_path: str, title_identifier: TitleIdentifier,
                 start = end - overlap if end < text_len else end
             return chunks
 
-        # 检查是否是日语PDF（有章节信息）
-        is_japanese_pdf = any(hasattr(page, 'chapters') and page.chapters for page in pages)
-        
-        # 构建页面章节映射
-        page_chapter_map = {}
-        if is_japanese_pdf:
-            for page in pages:
-                if hasattr(page, 'chapters') and page.chapters:
-                    page_chapter_map[page.page_number] = page.chapters
-        
         for page in pages:
             page_num = page.page_number
             section_title = page_title_map[page_num - 1] if page_num <= len(page_title_map) else ""
             
-            # 检查是否有日语章节信息
-            if is_japanese_pdf and page_num in page_chapter_map:
-                # 使用章节信息进行处理
-                for chapter in page_chapter_map[page_num]:
-                    chapter_title = chapter.get("title", "")
-                    chapter_content = chapter.get("content", "")
-                    chapter_num = chapter.get("chapter_num", 0)
-                    
-                    # 如果没有section_title，使用章节标题
-                    if not section_title and chapter_title:
-                        section_title = chapter_title
-                    
-                    # 对章节内容进行分块
-                    if chapter_content:
-                        text_chunks = local_chunk_text(chapter_content, chunk_size=512, overlap=50)
-                        
-                        for i, chunk in enumerate(text_chunks):
-                            chunk_id = f"{Path(pdf_path).stem}_c{chapter_num:03d}_p{page_num:03d}_c{i:03d}"
-                            chunk_counter += 1
+            # 获取页面完整文本，然后分块
+            full_text = page.get_full_text()
+            if not full_text or not full_text.strip():
+                continue
 
-                            # 获取文本块坐标（如果可能）
-                            coordinates = None
-                            try:
-                                if hasattr(page, 'text_blocks') and page.text_blocks:
-                                    block = page.text_blocks[0]
-                                    coordinates = {
-                                        "x0": getattr(block, "x0", None),
-                                        "y0": getattr(block, "y0", None),
-                                        "x1": getattr(block, "x1", None),
-                                        "y1": getattr(block, "y1", None)
-                                    }
-                            except Exception:
-                                coordinates = None
+            text_chunks = local_chunk_text(full_text, chunk_size=512, overlap=50)
 
-                            document_chunks.append({
-                                "id": chunk_id,
-                                "text": chunk,
-                                "page_number": page_num,
-                                "section_title": chapter_title,
-                                "chunk_index": i,
-                                "total_chunks_in_page": len(text_chunks),
-                                "coordinates": coordinates,
-                                "text_hash": hashlib.md5(chunk.encode()).hexdigest()[:16]
-                            })
-            else:
-                # 非日语PDF，使用原有的处理方式
-                # 获取页面完整文本，然后分块
-                full_text = page.get_full_text()
-                if not full_text or not full_text.strip():
-                    continue
+            for i, chunk in enumerate(text_chunks):
+                chunk_id = f"{Path(pdf_path).stem}_p{page_num:03d}_c{i:03d}"
+                chunk_counter += 1
 
-                text_chunks = local_chunk_text(full_text, chunk_size=512, overlap=50)
-
-                for i, chunk in enumerate(text_chunks):
-                    chunk_id = f"{Path(pdf_path).stem}_p{page_num:03d}_c{i:03d}"
-                    chunk_counter += 1
-
-                    # 获取文本块坐标（如果可能）
+                # 获取文本块坐标（如果可能）
+                coordinates = None
+                try:
+                    if hasattr(page, 'text_blocks') and page.text_blocks:
+                        block = page.text_blocks[0]
+                        coordinates = {
+                            "x0": getattr(block, "x0", None),
+                        "y0": getattr(block, "y0", None),
+                        "x1": getattr(block, "x1", None),
+                        "y1": getattr(block, "y1", None)
+                    }
+                except Exception:
                     coordinates = None
-                    try:
-                        if hasattr(page, 'text_blocks') and page.text_blocks:
-                            block = page.text_blocks[0]
-                            coordinates = {
-                                "x0": getattr(block, "x0", None),
-                                "y0": getattr(block, "y0", None),
-                                "x1": getattr(block, "x1", None),
-                                "y1": getattr(block, "y1", None)
-                            }
-                    except Exception:
-                        coordinates = None
 
-                    document_chunks.append({
-                        "id": chunk_id,
-                        "text": chunk,
-                        "page_number": page_num,
-                        "section_title": section_title,
-                        "chunk_index": i,
-                        "total_chunks_in_page": len(text_chunks),
-                        "coordinates": coordinates,
-                        "text_hash": hashlib.md5(chunk.encode()).hexdigest()[:16]
-                    })
+                document_chunks.append({
+                    "id": chunk_id,
+                    "text": chunk,
+                    "page_number": page_num,
+                    "section_title": section_title,
+                    "chunk_index": i,
+                    "total_chunks_in_page": len(text_chunks),
+                    "coordinates": coordinates,
+                    "text_hash": hashlib.md5(chunk.encode()).hexdigest()[:16]
+                })
         
         # 提取语言信息
         language = pages[0].language if pages else "Unknown"
@@ -580,7 +524,7 @@ def main():
     
     # 初始化组件
     title_identifier = TitleIdentifier()
-    from data.pdf_loader import PDFLoader
+    from src.data.pdf_loader import PDFLoader
     pdf_loader = PDFLoader()
     
     # 查找所有PDF文件
