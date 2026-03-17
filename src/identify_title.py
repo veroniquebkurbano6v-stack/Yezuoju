@@ -64,30 +64,86 @@ class TitleIdentifier:
         else:
             return len(text) <= self.chinese_max_chars
     
+    def _get_page_width(self, page, text_blocks: List) -> float:
+        """
+        估算页面宽度（多重回退策略）
+            
+        Args:
+            page: PDF 页面对象
+            text_blocks: 文本块列表
+                
+        Returns:
+            页面宽度（默认 612.0）
+        """
+        page_width = 612.0  # 默认页面宽度
+        try:
+            if hasattr(page, 'width') and page.width > 0:
+                page_width = page.width
+            elif hasattr(page, 'mediabox') and hasattr(page.mediabox, 'width'):
+                page_width = page.mediabox.width
+            elif text_blocks:
+                max_x = max(block.x1 for block in text_blocks if hasattr(block, 'x1'))
+                if max_x > 0:
+                    page_width = max_x
+        except Exception:
+            pass  # 使用默认值
+        return page_width
+    
     def check_text_centered(self, block, page_width: float, tolerance: float = 0.1) -> bool:
         """
         检查文本块是否水平居中
         
         Args:
-            block: 文本块对象，假设有x0, x1属性表示水平边界
+            block: 文本块对象，假设有 x0, x1 属性表示水平边界
             page_width: 页面总宽度
-            tolerance: 居中容忍度（默认为0.1，即页面宽度的10%）
+            tolerance: 居中容忍度（默认为 0.1，即页面宽度的 10%）
             
         Returns:
             bool: 是否水平居中
         """
-        # 如果文本块没有位置信息，返回False
+        # 如果文本块没有位置信息，返回 False
         if not hasattr(block, 'x0') or not hasattr(block, 'x1'):
             return False
         
         # 计算文本块的中心位置
         block_center = (block.x0 + block.x1) / 2
         
-        # 计算页面的居中区域（页面宽度的40%-60%为居中区域）
+        # 计算页面的居中区域（页面宽度的 40%-60% 为居中区域）
         center_start = page_width * (0.5 - tolerance)
         center_end = page_width * (0.5 + tolerance)
         
         return center_start <= block_center <= center_end
+        
+    def _is_valid_title_candidate(self, text: str, block, page_width: float, language: str) -> bool:
+        """
+        统一标题候选验证逻辑
+            
+        Args:
+            text: 文本内容
+            block: 文本块对象
+            page_width: 页面宽度
+            language: 语言类型
+                
+        Returns:
+            bool: 是否符合标题条件
+        """
+        # 【首要且不可更改】检查是否不含标点符号
+        has_punctuation = any(punc in text for punc in self.all_punctuation_list)
+        if has_punctuation:
+            return False
+            
+        # 检查水平居中
+        is_centered = self.check_text_centered(block, page_width)
+            
+        # 检查是否包含关键词
+        keywords = self._get_keywords(language)
+        contains_keyword = any(keyword in text for keyword in keywords)
+            
+        # 检查长度限制
+        length_ok = self.check_title_length(text, language)
+            
+        # 标题候选应同时满足：无标点符号 AND (包含关键词 OR 水平居中) AND 长度合适
+        return not has_punctuation and (contains_keyword or is_centered) and length_ok
     
     def identify_title(self, pages: List[Any]) -> List[Dict[str, Any]]:
         """
@@ -120,19 +176,8 @@ class TitleIdentifier:
             page_num = page.page_number
             text_blocks = page.text_blocks  # 所有文本块
             
-            # 估算页面宽度（如果无法获取，使用默认值）
-            page_width = 612.0  # 默认页面宽度
-            try:
-                if hasattr(page, 'width') and page.width > 0:
-                    page_width = page.width
-                elif hasattr(page, 'mediabox') and hasattr(page.mediabox, 'width'):
-                    page_width = page.mediabox.width
-                elif text_blocks:
-                    max_x = max(block.x1 for block in text_blocks if hasattr(block, 'x1'))
-                    if max_x > 0:
-                        page_width = max_x
-            except:
-                pass  # 使用默认值
+            # 估算页面宽度
+            page_width = self._get_page_width(page, text_blocks)
             
             for block in text_blocks:
                 text = block.text.strip()
@@ -140,22 +185,8 @@ class TitleIdentifier:
                 if not text:
                     continue
                 
-                # 【首要且不可更改】检查是否不含标点符号 - 第一个强制性条件
-                has_punctuation = any(punc in text for punc in self.all_punctuation_list)
-                if has_punctuation:
-                    continue  # 跳过含有标点符号的文本块
-                
-                # 检查水平居中
-                is_centered = self.check_text_centered(block, page_width)
-                
-                # 检查是否包含关键词
-                contains_keyword = any(keyword in text for keyword in keywords)
-                
-                # 检查长度限制
-                length_ok = self.check_title_length(text, language)
-                
-                # 标题候选应同时满足：无标点符号 AND (包含关键词 OR 水平居中) AND 长度合适
-                if not has_punctuation and (contains_keyword or is_centered) and length_ok:
+                # 使用统一的验证逻辑
+                if self._is_valid_title_candidate(text, block, page_width, language):
                     # 符合条件，记录标题
                     titles.append({
                         "title": text,
@@ -170,47 +201,23 @@ class TitleIdentifier:
         if titles:
             print("第一阶段找到标题，继续遍历剩余页面...")
             
-            # 继续遍历第11页开始的剩余页面
+            # 继续遍历第 11 页开始的剩余页面
             remaining_pages = pages[10:]
             for page in remaining_pages:
                 page_num = page.page_number
                 text_blocks = page.text_blocks  # 所有文本块
-                
+                            
                 # 估算页面宽度
-                page_width = 612.0  # 默认页面宽度
-                try:
-                    if hasattr(page, 'width') and page.width > 0:
-                        page_width = page.width
-                    elif hasattr(page, 'mediabox') and hasattr(page.mediabox, 'width'):
-                        page_width = page.mediabox.width
-                    elif text_blocks:
-                        max_x = max(block.x1 for block in text_blocks if hasattr(block, 'x1'))
-                        if max_x > 0:
-                            page_width = max_x
-                except:
-                    pass  # 使用默认值
-                
+                page_width = self._get_page_width(page, text_blocks)
+                            
                 for block in text_blocks:
                     text = block.text.strip()
-                    
+                                
                     if not text:
                         continue
-                    
-                    # 【首要且不可更改】检查是否不含标点符号
-                    has_punctuation = any(punc in text for punc in self.all_punctuation_list)
-                    if has_punctuation:
-                        continue  # 跳过含有标点符号的文本块
-                    
-                    # 检查水平居中
-                    is_centered = self.check_text_centered(block, page_width)
-                    
-                    # 检查是否包含关键词
-                    contains_keyword = any(keyword in text for keyword in keywords)
-                    
-                    # 检查长度限制
-                    length_ok = self.check_title_length(text, language)
-                    
-                    if not has_punctuation and (contains_keyword or is_centered) and length_ok:
+                                
+                    # 使用统一的验证逻辑
+                    if self._is_valid_title_candidate(text, block, page_width, language):
                         # 符合条件，记录标题
                         titles.append({
                             "title": text,
@@ -232,53 +239,35 @@ class TitleIdentifier:
             text_blocks = page.text_blocks  # 所有文本块
             
             # 估算页面宽度
-            page_width = 612.0  # 默认页面宽度
-            try:
-                if hasattr(page, 'width') and page.width > 0:
-                    page_width = page.width
-                elif hasattr(page, 'mediabox') and hasattr(page.mediabox, 'width'):
-                    page_width = page.mediabox.width
-                elif text_blocks:
-                    max_x = max(block.x1 for block in text_blocks if hasattr(block, 'x1'))
-                    if max_x > 0:
-                        page_width = max_x
-            except:
-                pass  # 使用默认值
-            
-            # 加载关键词
-            keywords = self._get_keywords(language)
-            
+            page_width = self._get_page_width(page, text_blocks)
+                        
             for block in text_blocks:
                 text = block.text.strip()
-                
+                            
                 if not text:
                     continue
+                            
+                # 使用统一的验证逻辑
+                is_valid = self._is_valid_title_candidate(text, block, page_width, language)
                 
-                # 【首要且不可更改】检查是否不含标点符号
-                has_punctuation = any(punc in text for punc in self.all_punctuation_list)
-                if has_punctuation:
-                    print(f"🔍 调试：第二阶段跳过含标点文本 '{text}' (页码: {page_num})")
-                    continue  # 跳过含有标点符号的文本块
-                
-                # 检查水平居中
-                is_centered = self.check_text_centered(block, page_width)
-                
-                # 检查长度限制
-                length_ok = self.check_title_length(text, language)
-                
-                # 检查是否包含关键词
-                contains_keyword = any(keyword in text for keyword in keywords)
-                
-                # 【关键修复】标题候选应同时满足：无标点符号 AND (包含关键词 OR 水平居中) AND 长度合适
-                if not has_punctuation and (contains_keyword or is_centered) and length_ok:
+                if is_valid:
                     # 添加到预备标题列表
+                    keywords = self._get_keywords(language)
                     candidate_titles.append({
                         "title": text,
                         "start_page": page_num
                     })
-                    print(f"🔍 调试：第二阶段通过候选文本 '{text}' (页码: {page_num}, 关键词: {contains_keyword}, 居中: {is_centered})")
+                    contains_keyword = any(keyword in text for keyword in keywords)
+                    is_centered = self.check_text_centered(block, page_width)
+                    print(f"🔍 调试：第二阶段通过候选文本 '{text}' (页码：{page_num}, 关键词：{contains_keyword}, 居中：{is_centered})")
                 else:
                     # 调试：记录失败原因
+                    has_punctuation = any(punc in text for punc in self.all_punctuation_list)
+                    is_centered = self.check_text_centered(block, page_width)
+                    keywords = self._get_keywords(language)
+                    contains_keyword = any(keyword in text for keyword in keywords)
+                    length_ok = self.check_title_length(text, language)
+                    
                     reasons = []
                     if has_punctuation:
                         reasons.append("含标点")
@@ -286,12 +275,16 @@ class TitleIdentifier:
                         reasons.append("无关键词且不居中")
                     if not length_ok:
                         reasons.append("长度不合规")
-                    print(f"🔍 调试：第二阶段拒绝文本 '{text}' (页码: {page_num}, 原因: {', '.join(reasons)})")
+                    print(f"🔍 调试：第二阶段拒绝文本 '{text}' (页码：{page_num}, 原因：{', '.join(reasons)})")
         
         if not candidate_titles:
             print("未找到任何标题")
             return []
-        
+        # 打印所有预备标题（调试日志）
+        print(f"\n📋 预备标题列表（共 {len(candidate_titles)} 个）:")
+        for i, title_info in enumerate(candidate_titles, 1):
+            print(f"   [{i:3d}] '{title_info['title']}' - 起始页：{title_info['start_page']}")
+        print("==================================")
         # 统计预备标题的出现次数
         title_counts = {}
         for title_info in candidate_titles:
@@ -512,12 +505,13 @@ def process_pdf_to_page_titles(pdf_path: str, title_identifier: TitleIdentifier,
 
 def main():
     """主函数"""
-    print("📚 PDF章节标题识别工具")
+    print("📚 PDF 章节标题识别工具")
     print("=" * 60)
     
-    # 定义路径
-    source_dir = Path("src/data/source")
-    output_dir = Path("src/data/pages_title")
+    # 定义路径 - 使用相对于项目根目录的绝对路径
+    project_root = Path(__file__).parent.parent
+    source_dir = project_root / "src" / "data" / "source"
+    output_dir = project_root / "src" / "data" / "pages_title"
     
     # 创建输出目录
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -568,14 +562,9 @@ def main():
             with open(json_path, 'w', encoding='utf-8') as f:
                 json.dump(result, f, ensure_ascii=False, indent=2)
             
-            # 统计信息：兼容旧/新两种 JSON 结构
-            if "document_chunks" in result and isinstance(result.get("document_chunks"), list):
-                unique_titles = len(set(chunk.get("section_title", "") for chunk in result["document_chunks"] if chunk.get("section_title")))
-            elif "page_sections" in result and isinstance(result.get("page_sections"), list):
-                unique_titles = len(set(section.get("section_title", "") for section in result["page_sections"]))
-                unique_titles = len(set(chunk.get("section_title", "") for chunk in result["document_chunks"] if chunk.get("section_title")))
-            else:
-                unique_titles = 0
+            # 统计信息：计算不重复的章节标题数量
+            all_chunks = result.get("document_chunks", [])
+            unique_titles = len(set(chunk.get("section_title", "") for chunk in all_chunks if chunk.get("section_title")))
 
             total_pages = result["parent_document"].get("total_pages", 0)
             

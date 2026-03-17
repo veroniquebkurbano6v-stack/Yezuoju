@@ -75,9 +75,17 @@ export default function ChatWindow({ dialogId, selectedPdf, setSelectedPdf, onCi
       if (data.success) {
         setHistory((h) => [...h, { role: "user", text: input }, { role: "assistant", text: data.answer }]);
         setInput("");
-        // 更新引用展示
-        if (onCitationsUpdate && data.retrieved_docs) {
-          onCitationsUpdate(data.retrieved_docs);
+        // 🔧 更新引用展示 - 从 references 字段获取
+        if (onCitationsUpdate && data.references) {
+          // 将 references 转换为 citations 格式
+          const citations = data.references.map(ref => ({
+            pdf_filename: ref.pdf_filename,
+            section_title: ref.section_title,
+            page_number: ref.page_number,
+            score: ref.score,
+            text: ref.text  // 🔧 修复：使用 text 字段而不是 text_preview
+          }));
+          onCitationsUpdate(citations);
         }
       } else {
         setHistory((h) => [...h, { role: "assistant", text: "错误：" + (data.error || "未知") }]);

@@ -71,12 +71,29 @@ npm run dev
 
 **注意**：确保同时启动后端和前端服务，前端依赖后端API才能正常工作。
 
-### 5. 交互式代理（可选）
+### 5. 调试工具（开发用）
 
-如果需要使用命令行交互：
+`run_agent.py` 是系统的调试工具，直接调用 `deepseek_agent.py` 的完整功能，用于开发和测试：
 
 ```bash
+# 交互式模式（支持多轮对话）
 python run_agent.py
+
+# 单次查询模式
+python run_agent.py --query "你的查询内容"
+```
+
+**特点**：
+- ✅ 直接复用 `DeepSeekRetrievalAgent.chat()` 方法，避免重复造轮子
+- ✅ 支持对话历史管理（交互式模式下自动维护）
+- ✅ 包含详细的调试输出（`[DEBUG]` 前缀）
+- ✅ 自动降级机制（DeepSeek 失败时切换到直接检索）
+
+**调试输出示例**：
+```
+[DEBUG] 初始化 DeepSeek 代理...
+[DEBUG] 调用 agent.chat() 方法...
+[DEBUG] 查询完成，answer_source=retrieval
 ```
 
 ## 配置说明
@@ -143,7 +160,7 @@ React + Tailwind CSS 构建的响应式前端，提供：
 
 ```
 StoryRag/
-├── run_agent.py              # 系统统一入口脚本
+├── run_agent.py              # 调试工具（直接调用 deepseek_agent.py）
 ├── .env                     # 环境变量配置
 ├── requirements.txt         # Python 依赖
 ├── src/                     # 数据处理层
@@ -233,22 +250,34 @@ StoryRag/
 
 ## 执行模式
 
-### 交互式模式
+### Web 界面模式（推荐）
+
+同时启动后端和前端服务，通过浏览器访问完整功能：
 
 ```bash
+# 终端 1: 启动后端
+python -m backend.app.main
+
+# 终端 2: 启动前端
+cd frontend
+npm run dev
+```
+
+访问 http://localhost:5173/ 使用 Web 界面。
+
+### 调试工具模式（开发用）
+
+直接使用 `run_agent.py` 调试工具（不依赖前后端分离架构）：
+
+```bash
+# 交互式模式（支持多轮对话）
 python run_agent.py
-```
 
-### 直接查询模式
+# 单次查询模式
+python run_agent.py --query "你的问题"
 
-```bash
-python run_agent.py --query "你的查询内容"
-```
-
-### 批量查询模式
-
-```bash
-python run_agent.py --file queries.txt
+# 自定义检索数量
+python run_agent.py --query "你的问题" --top-k 60
 ```
 
 ## 常见问题解答（FAQ）

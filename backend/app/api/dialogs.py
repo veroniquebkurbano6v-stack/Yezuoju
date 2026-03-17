@@ -230,9 +230,15 @@ def chat(
         dialog_manager.increment_message_count(dialog_id)
         logger.debug(f"[dialogs.chat] 更新对话 {dialog_id} 的消息计数")
     except Exception as e:
-        logger.warning(f"[dialogs.chat] 更新对话元数据失败: {e}")
-    
-    # 返回响应，包含对话ID和AI回复结果
-    return {"dialog_id": dialog_id, **result}
+        logger.warning(f"[dialogs.chat] 更新对话元数据失败：{e}")
+        
+    # 🔧 关键修复：将 retrieved_docs 重命名为 references，以匹配前端期望的字段名
+    response = {"dialog_id": dialog_id, **result}
+        
+    # 如果 result 中有 retrieved_docs，将其转换为 references
+    if "retrieved_docs" in response:
+        response["references"] = response.pop("retrieved_docs")
+        
+    return response
 
 

@@ -70,12 +70,14 @@ class DeepSeekRetrievalAgent:
             self.tools = tools_instance.tools
             self.smart_retrieval = tools_instance.smart_retrieval
             self.smart_retrieval_impl = tools_instance.smart_retrieval_impl
+            self.tools_instance = tools_instance  # 保存工具实例引用以访问缓存
             logger.info("复用已初始化的 langchain tools")
         else:
             tools_instance = get_langchain_tools(self.vector_db_path, self.embedding_model)
             self.tools = tools_instance.tools
             self.smart_retrieval = tools_instance.smart_retrieval
             self.smart_retrieval_impl = tools_instance.smart_retrieval_impl
+            self.tools_instance = tools_instance  # 保存工具实例引用以访问缓存
 
         self.param_parser = JsonOutputParser()
         self.param_prompt = ChatPromptTemplate.from_messages([
@@ -131,17 +133,18 @@ class DeepSeekRetrievalAgent:
             import json
             query_request_json = json.dumps({"query": query, "filter_pdf": filter_pdf}, ensure_ascii=False)
 
-            # 尝试使用 invoke 方法调用工具，如果失败则直接调用函数
+            # 调用智能检索工具（只调用一次）
             try:
                 tool_result = self.smart_retrieval.invoke({"query_request_json": query_request_json, "top_k": 60})
             except Exception:
                 # 如果是普通函数，调用原始函数
                 tool_result = self.smart_retrieval(query_request_json, top_k=60)
 
-            # 获取原始检索结果用于引用展示框
+            # 从工具实例中获取缓存的原始检索结果（避免重复调用）
+            retrieved_docs = []  # 先初始化为空列表
             try:
-                raw_results = self.smart_retrieval_impl(query, top_k=10, filter_conditions=None, filter_pdf=filter_pdf)
-                retrieved_docs = []
+                # _last_raw_results 存储在 tools_instance 上
+                raw_results = self.tools_instance._last_raw_results if hasattr(self.tools_instance, '_last_raw_results') else []
                 for r in raw_results:
                     retrieved_docs.append({
                         "pdf_filename": r.pdf_filename or "未知文件",
@@ -152,7 +155,7 @@ class DeepSeekRetrievalAgent:
                         "matched": getattr(r, 'matched', True)
                     })
             except Exception as e:
-                logger.warning(f"获取原始检索结果失败: {e}")
+                logger.warning(f"获取原始检索结果失败：{e}")
                 retrieved_docs = []
 
             # 调试日志：记录检索结果状态

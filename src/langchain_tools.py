@@ -5,7 +5,6 @@ LangChain工具封装 - 将RAG系统集成到LangChain框架中
 
 import json
 import logging
-import math
 import os
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -93,7 +92,7 @@ class DocumentRetrievalTools:
         try:
             self.file_match_threshold = float(os.getenv("FILE_MATCH_THRESHOLD", "0.7"))
         except Exception:
-            self.file_match_threshold = 0.7
+            self.file_match_threshold = 0.85
         try:
             self.section_match_threshold = float(os.getenv("SECTION_MATCH_THRESHOLD", "0.65"))
         except Exception:
@@ -266,102 +265,9 @@ class DocumentRetrievalTools:
             logger.warning(f"转换旧格式到新格式失败: {e}")
     
     def _create_tools(self):
-        """创建LangChain工具实例"""
+        """创建 LangChain 工具实例"""
         tools = []
         
-        def _compute_top_match(query_vec, candidate_embeddings, candidate_texts, top_k: int = 1):
-            """基于余弦相似度，返回 top_k 候选 (text, score) 列表"""
-            import numpy as _np
-            if candidate_embeddings is None or len(candidate_texts) == 0:
-                return []
-            emb = _np.array(candidate_embeddings)
-            q = _np.array(query_vec, dtype=float)
-            try:
-                emb_norm = emb / (_np.linalg.norm(emb, axis=1, keepdims=True) + 1e-12)
-                q_norm = q / (_np.linalg.norm(q) + 1e-12)
-            except Exception:
-                emb_norm = emb
-                q_norm = q
-            sims = (_np.dot(emb_norm, q_norm)).tolist()
-            ranked = sorted(enumerate(sims), key=lambda x: x[1], reverse=True)[:top_k]
-            results = []
-            for idx, score in ranked:
-                results.append((candidate_texts[idx], float(score)))
-            return results
-
-        def _normalize_score(score: float, min_score: float, max_score: float) -> float:
-            """将分数归一化到 0-1 范围"""
-            score_range = max_score - min_score
-            if score_range <= 0:
-                return 0.5
-            return (score - min_score) / score_range
-
-        def _compute_top_match_with_rerank(query: str, query_vec, candidate_embeddings, candidate_texts, top_k: int = 5):
-            """
-            先进行向量检索获取 top_k 结果，再使用 reranker 重排
-            综合分数 = 0.4 * 向量相似度分数 + 0.6 * 重排分数
-            返回分数 >= 0.75 的最佳匹配
-            """
-            if candidate_embeddings is None or len(candidate_texts) == 0:
-                return None
-
-            # Step 1: 向量检索获取 top-5
-            vector_results = _compute_top_match(query_vec, candidate_embeddings, candidate_texts, top_k=top_k)
-            print(f"[vector_retrieval] 原始向量检索结果: {vector_results}")
-            if not vector_results:
-                return None
-
-            # 提取向量检索结果
-            vector_docs = [item[0] for item in vector_results]
-            vector_scores = [item[1] for item in vector_results]
-
-            # Step 2: Reranker 重排
-            try:
-                rerank_results = self.reranker_model.rerank(query, vector_docs, top_k=top_k)
-                print(f"[rerank] 重排结果: {rerank_results}")
-                # rerank_results 格式: [(index, rerank_score), ...]
-            except Exception as e:
-                logger.warning(f"Reranker 调用失败，回退到纯向量检索: {e}")
-                return (vector_results[0][0], vector_results[0][1]) if vector_results else None
-
-            # Step 3: 构建 rerank 分数映射
-            rerank_score_map = {idx: score for idx, score in rerank_results}
-
-            # Step 4: 分数融合
-            min_vec_score = min(vector_scores)
-            max_vec_score = max(vector_scores)
-
-            best_result = None
-            best_combined_score = 0.0
-
-            for idx, (doc, vec_score) in enumerate(zip(vector_docs, vector_scores)):
-                rerank_score = rerank_score_map.get(idx, 0.0)
-
-                # 归一化向量分数到 0-1 范围
-                normalized_vec_score = _normalize_score(vec_score, min_vec_score, max_vec_score)
-
-                # 归一化 rerank 分数（BGE reranker 输出 logits，可能为负数）
-                # 使用 sigmoid 函数将 logits 转换为 0-1 概率范围
-                # sigmoid(x) = 1 / (1 + exp(-x))
-                # 这样负数分数会映射到 0-0.5，正数分数映射到 0.5-1
-                normalized_rerank_score = 1.0 / (1.0 + math.exp(-rerank_score))
-
-                # 融合分数：(1 - alpha) * 向量分数 + alpha * 重排分数
-                combined_score = (1 - self.section_rerank_alpha) * normalized_vec_score + self.section_rerank_alpha * normalized_rerank_score
-
-                logger.debug(f"[rerank] {doc[:30]}... vec={vec_score:.3f}->{normalized_vec_score:.3f}, rerank={rerank_score:.3f}->{normalized_rerank_score:.3f}, combined={combined_score:.3f}")
-                print(f"[rerank] {doc[:30]}... vec={vec_score:.3f}->{normalized_vec_score:.3f}, rerank={rerank_score:.3f}->{normalized_rerank_score:.3f}, combined={combined_score:.3f}")
-                if combined_score > best_combined_score:
-                    best_combined_score = combined_score
-                    best_result = (doc, combined_score, vec_score, rerank_score)
-            print(f"[rerank] 最佳匹配: {best_result[0][:50]}... combined={best_combined_score:.3f} (vec={best_result[2]:.3f}, rerank={best_result[3]:.3f})")
-            if best_result and best_combined_score >= self.section_match_threshold:
-                logger.info(f"[rerank] 最终匹配: {best_result[0][:50]}... combined={best_combined_score:.3f} (vec={best_result[2]:.3f}, rerank={best_result[3]:.3f})")
-                return (best_result[0], best_combined_score)
-
-            logger.info(f"[rerank] 无匹配结果 (best={best_combined_score:.3f} < {self.section_match_threshold})")
-            return None
-
         def _build_query_with_filter(query: str, filter_pdf: str = None) -> str:
             """将 filter_pdf 拼接到 query 中"""
             if not filter_pdf:
@@ -370,131 +276,44 @@ class DocumentRetrievalTools:
 
         def smart_retrieval_impl(query: str, top_k: int = 60, filter_conditions: Dict = None, filter_pdf: str = None):
             """
-            智能检索实现 - 并行匹配逻辑
+            智能检索实现 - 直接调用 mixed_retrieval 的 smart_search
 
             Args:
                 query: 查询文本
                 top_k: 返回结果数量
                 filter_conditions: 过滤条件字典，如 {"pdf_filename": "xxx.pdf"}
-                filter_pdf: 指定的 PDF 文件名，拼接到 query 中用于智能匹配
+                filter_pdf: 指定的 PDF文件名，拼接到 query 中用于智能匹配
             """
             logger.info(f"[smart_retrieval_impl] query={query}, filter_conditions={filter_conditions}, filter_pdf={filter_pdf}")
 
-            enhanced_query = _build_query_with_filter(query, filter_pdf)
-            logger.info(f"[smart_retrieval_impl] 增强后的查询: {enhanced_query}")
-
-            qvec = self.embedding_model.encode([enhanced_query])[0]
+            # 🔧 关键修复：提取核心查询词用于智能匹配
+            # 如果 query 包含 "[仅在文件：xxx]" 格式，先提取出核心查询词
+            core_query = query
+            import re
+            match = re.search(r'(.+?)\s*\[仅在文件：', query)
+            if match:
+                core_query = match.group(1).strip()
+                logger.info(f"[smart_retrieval_impl] 提取核心查询词：{core_query}")
             
-            # 智能匹配逻辑（文件名匹配 -> 章节匹配 -> 向量检索）
-
-            # 1. 文件名匹配（有filter_pdf时跳过）
-            file_match_result = None
-            if not filter_pdf:
-                # 只有在没有filter_pdf时才进行文件名匹配
-                file_match_result = _compute_top_match(qvec, self.filename_embeddings, self.all_filenames, top_k=1)
-                fname, fscore = file_match_result[0] if file_match_result else (None, 0.0)
-                logger.info(f"[smart_retrieval] 文件名匹配: {fname} score={fscore:.3f}")
-            else:
-                # 有filter_pdf时，直接使用指定的文件名
-                fname = filter_pdf
-                fscore = 1.0  # 强制匹配
-                logger.info(f"[smart_retrieval] 使用指定的filter_pdf: {fname}")
-
-            # 2. 章节标题匹配（范围根据文件名匹配结果动态决定，使用向量+Reranker双阶段检索）
-            chapter_match_result = None
-            target_section = None
+            # 使用核心查询词构建增强查询（避免冗余信息稀释分词权重）
+            enhanced_query = _build_query_with_filter(core_query, filter_pdf)
+            logger.info(f"[smart_retrieval_impl] 增强后的查询：{enhanced_query}")
             
-            if fname and fscore >= self.file_match_threshold:
-                # 情况A：文件名匹配成功，只在该文件下的章节中匹配
-                section_data = self.file_sections.get(fname)
-                if section_data:
-                    chapter_match_result = _compute_top_match_with_rerank(
-                        enhanced_query,  
-                        qvec,
-                        section_data["section_embeddings"],
-                        section_data["section_titles"],
-                        top_k=5
-                    )
-            elif fname:
-                # 情况B：有指定文件名但可能没有文件匹配，尝试在该文件下匹配章节
-                section_data = self.file_sections.get(fname)
-                if section_data:
-                    chapter_match_result = _compute_top_match_with_rerank(
-                        enhanced_query,  
-                        qvec,
-                        section_data["section_embeddings"],
-                        section_data["section_titles"],
-                        top_k=5
-                    )
-            else:
-                # 情况C：文件名匹配失败，在所有章节中匹配
-                # 需要合并所有文件的章节向量
-                all_sections_data = self._get_all_sections_data()
-                if all_sections_data["embeddings"] is not None:
-                    chapter_match_result = _compute_top_match_with_rerank(
-                        enhanced_query,
-                        qvec,
-                        all_sections_data["embeddings"],
-                        all_sections_data["titles_with_file"],
-                        top_k=5
-                    )
-
-            # 3. 结果决策
-            target_filename = None
-            target_section = None
-            mode = "hybrid"
-
-            # 优先使用章节匹配结果（_compute_top_match_with_rerank 已内部判断 combined_score >= 0.75）
-            if chapter_match_result:
-                chapter_title, cscore = chapter_match_result
-                target_section = chapter_title
-                
-                if fname:
-                    # 情况A：直接使用已匹配的文件名（适用于智能匹配或用户指定filter_pdf）
-                    target_filename = fname
-                    logger.info(f"[smart_retrieval] section match: {target_section} score={cscore:.3f} -> file={target_filename}")
-                else:
-                    # 情况B：从章节标题中解析文件名
-                    if "|" in chapter_title:
-                        target_filename, target_section = chapter_title.split("|", 1)
-                        logger.info(f"[smart_retrieval] section match: {target_section} score={cscore:.3f} -> file={target_filename}")
-                    else:
-                        target_filename = self._find_file_by_section(chapter_title)
-                        if target_filename:
-                            logger.info(f"[smart_retrieval] section match: {target_section} score={cscore:.3f} -> file={target_filename}")
-
-                if target_filename:
-                    mode = "precise_by_section"
-
-            # 次选文件名匹配结果
-            if not target_filename and fname and fscore >= self.file_match_threshold:
-                target_filename = fname
-                mode = "precise_by_file"
-                logger.info(f"[smart_retrieval] file match: {fname} score={fscore:.3f}")
-
-            # 4. 执行检索
-            if mode.startswith("precise") and target_filename:
-                # ChromaDB expects simple dict for single-condition filters
-                if target_section:
-                    where = {"$and": [{"pdf_filename": {"$eq": target_filename}}, {"section_title": {"$eq": target_section}}]}
-                else:
-                    where = {"pdf_filename": {"$eq": target_filename}}
-                logger.info(f"[smart_retrieval] using precise filter where={where}")
-                results = self.retriever._vector_search(self.embedding_model.encode([enhanced_query])[0], top_k, where)
-            else:
-                logger.info("[smart_retrieval] 无文件名/章节匹配，不进行回退检索")
-                results = []
-
-            # attach mode info in attribute if needed
+            # 直接调用 mixed_retrieval 的 smart_search 方法
+            # smart_search 会自动处理：
+            # 1. 文件名和章节标题匹配（基于 JSON 索引）
+            # 2. 构建过滤条件
+            # 3. 向量检索
+            # 4. Reranker 精排
+            results = self.retriever.smart_search(enhanced_query, top_k=top_k)
+            
+            # 缓存原始检索结果供后续使用（避免重复调用）
+            self._last_raw_results = results if results else []
+            
+            # 标记检索模式
             for r in results:
                 try:
-                    setattr(r, "smart_mode", mode)
-                except Exception:
-                    pass
-
-            # 标记是否有匹配
-            for r in results:
-                try:
+                    setattr(r, "smart_mode", "smart_search")
                     setattr(r, "matched", True)
                 except Exception:
                     pass
@@ -522,9 +341,13 @@ class DocumentRetrievalTools:
 
                 logger.info(f"[smart_retrieval_tool] 原始query: {query}, filter_pdf: {filter_pdf}")
 
-                # 只传递原始query，查询增强在smart_retrieval_impl中统一处理
+                # 只传递原始 query，查询增强在 smart_retrieval_impl 中统一处理
                 results = smart_retrieval_impl(query, top_k=top_k, filter_conditions=None, filter_pdf=filter_pdf)
-
+                                
+                # 缓存原始结果供后续使用（避免重复调用）
+                self._last_raw_results = results if results else []
+                logger.info(f"[smart_retrieval_tool] 缓存检索结果：{len(self._last_raw_results)} 条")
+                                
                 if not results:
                     return f"未检索到与「{query}」相关的内容。"
 
@@ -567,40 +390,12 @@ class DocumentRetrievalTools:
     @property
     def tools(self):
         """
-        返回所有可用的LangChain工具
+        返回所有可用的 LangChain 工具
         
         Returns:
             List: 包含所有工具方法的列表
         """
         return self._tools
-
-    def _get_all_sections_data(self):
-        """
-        获取所有章节数据（用于全局匹配）
-        返回: {"titles_with_file": [], "embeddings": []}
-        注意: titles_with_file 格式为 ["文件名|章节标题", ...]
-        """
-        titles_with_file = []
-        embeddings = []
-
-        for filename, data in self.file_sections.items():
-            for title, emb in zip(data["section_titles"], data["section_embeddings"]):
-                titles_with_file.append(f"{filename}|{title}")
-                embeddings.append(emb)
-
-        return {
-            "titles_with_file": titles_with_file,
-            "embeddings": _np.array(embeddings) if embeddings else None
-        }
-
-    def _find_file_by_section(self, section_title: str) -> Optional[str]:
-        """
-        通过章节标题查找所属文件名
-        """
-        for filename, data in self.file_sections.items():
-            if section_title in data["section_titles"]:
-                return filename
-        return None
 
 def create_retrieval_tools(vector_db_path: str, embedding_model_name: str = "intfloat/multilingual-e5-large",
                            vector_db: VectorDatabase = None, embedding_model: EmbeddingModel = None,

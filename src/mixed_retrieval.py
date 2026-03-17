@@ -6,6 +6,7 @@ import torch
 import os
 import glob
 import json
+import re
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,32 +19,45 @@ from embedding_vector import DocumentChunk, SearchResult, VectorDatabase, Embedd
 
 logger = logging.getLogger(__name__)
 
-# 轻量分词：自动识别中/日/英并返回 token 列表（有 jieba/fugashi 时优先使用）
-try:
-    import jieba
-except Exception:
-    jieba = None
-try:
-    from fugashi import Tagger as MeCabTagger
-    _mecab = MeCabTagger()
-except Exception:
-    _mecab = None
-import re
+# 🔧 关键修复：只使用嵌入模型的分词器，不再自作聪明搞停用词过滤
+embedding_model_instance = None
+
+def init_tokenizer():
+    """初始化分词器（使用嵌入模型的 tokenizer）"""
+    global embedding_model_instance
+    if embedding_model_instance is None:
+        try:
+            from sentence_transformers import SentenceTransformer
+            model_name = os.getenv("EMBEDDING_MODEL", "intfloat/multilingual-e5-large")
+            embedding_model_instance = SentenceTransformer(model_name)
+            logger.info(f"[tokenize_text] 使用嵌入模型的分词器：{model_name}")
+        except Exception as e:
+            logger.error(f"[tokenize_text] 无法加载嵌入模型分词器：{e}")
+            raise RuntimeError(f"无法加载嵌入模型 {model_name}: {e}")
+    return embedding_model_instance
 
 def tokenize_text(text: str, lang_hint: Optional[str] = None) -> List[str]:
+    """
+    🔧 强制使用嵌入模型的分词器，不允许 fallback
+    """
     if not text:
         return []
-    txt = text.strip().lower()
-    # 简单语言探测
-    if (lang_hint or "").lower().startswith("ch") or re.search(r'[\u4e00-\u9fff]', txt):
-        if jieba:
-            return [t for t in jieba.cut(txt) if t.strip()]
-        return [ch for ch in txt if ch.strip()]
-    if (lang_hint or "").lower().startswith("ja") or re.search(r'[\u3040-\u30ff]', txt):
-        if _mecab:
-            return [word.surface for word in _mecab(txt)]
-        return [ch for ch in txt if ch.strip()]
-    return re.findall(r"[a-z0-9']{1,}", txt)
+    
+    # 🔧 必须使用嵌入模型的分词器
+    model = init_tokenizer()
+    if model is not None and hasattr(model, 'tokenizer') and model.tokenizer is not None:
+        try:
+            # 使用 tokenizer 对文本进行分词
+            tokens = model.tokenizer.tokenize(text.lower())
+            # 过滤掉特殊 token 和标点符号
+            special_tokens = ['[CLS]', '[SEP]', '[MASK]', '[PAD]', '<s>', '</s>', '<pad>', '[unk]']
+            filtered_tokens = [t for t in tokens if t not in special_tokens and not re.match(r'^[\.,;:!?\s]+$', t)]
+            return filtered_tokens
+        except Exception as e:
+            logger.error(f"[tokenize_text] 嵌入模型分词失败：{e}")
+            raise RuntimeError(f"分词失败：{e}")
+    else:
+        raise RuntimeError("嵌入模型未正确初始化或没有 tokenizer")
 
 class RerankerModel:
     """Reranker精排模型"""
@@ -381,8 +395,8 @@ class VectorRetriever:
             logger.warning("文件名列表管理器未初始化")
             return []
     
-    def hybrid_search(self, query: str, top_k: int = 60, alpha: float = 0.7, 
-                     candidate_top_k: int = 120, use_filename_filter: bool = True) -> List[SearchResult]:
+    def hybrid_search(self, query: str, top_k: int = 45, alpha: float = 0.7, 
+                     candidate_top_k: int = 90, use_filename_filter: bool = True) -> List[SearchResult]:
         """
         三阶段混合检索：
         阶段0：文件名相关性过滤（可选）
@@ -432,7 +446,7 @@ class VectorRetriever:
                 filter_conditions = None
         
         # 阶段1：混合召回 - 获取更多候选结果
-        candidate_k = max(candidate_top_k, top_k * 3)  # 确保有足够候选
+        candidate_k = max(candidate_top_k, top_k * 2)  # 确保有足够候选
         
         # 生成查询向量
         query_vector = self.embedding_model.encode([query])[0]
@@ -468,45 +482,115 @@ class VectorRetriever:
         """
         智能检索入口：优先判断 query 是否直接与文件名或章节标题相关（使用 JSON 索引）。
         - 若匹配到文件名或章节标题：基于这些 section_title 构建过滤条件并直接在向量库中检索（可选页码范围）。
-        - 否则：回退到 hybrid_search（向量+关键词+Reranker）。
+        - 否则：回退到 hybrid_search（向量 + 关键词+Reranker）。
         返回最终 top_k 个结果（默认 100）。
         """
         try:
-            # 构建文件-章节索引
+            # 构建文件 - 章节索引
             index = build_file_section_index(json_dir)
             q_lower = query.lower()
-
+    
             matched_filenames = []
             matched_section_titles = []
-
+            section_priority_scores = {}  # 新增：记录每个章节的优先级分数
+    
             # 使用全文分词匹配（token overlap）判断是否与 filename/section_title 直接相关
             q_tokens = set(tokenize_text(query))
-            match_threshold = 0.5  # query token 覆盖率阈值
-
+            
+            # 从环境变量读取匹配阈值
+            try:
+                file_match_threshold = float(os.getenv("FILE_MATCH_THRESHOLD", "0.5"))
+            except Exception:
+                file_match_threshold = 0.5
+            
+            try:
+                min_title_overlap = float(os.getenv("MIN_TITLE_OVERLAP", "0.15"))
+            except Exception:
+                min_title_overlap = 0.15
+    
             for fname, info in index.items():
                 name_no_ext = fname.rsplit(".", 1)[0]
                 name_tokens = set(tokenize_text(name_no_ext))
-
+    
                 # 文件名匹配：query tokens 覆盖率
                 if q_tokens and name_tokens:
                     name_overlap = len(q_tokens & name_tokens) / max(1, len(q_tokens))
-                    if name_overlap >= match_threshold:
+                    if name_overlap >= file_match_threshold:
                         matched_filenames.append(fname)
-                        matched_section_titles.extend(list(info["sections"].keys()))
+                        # 不再直接添加所有章节，而是对每个章节单独评分
+                        for title, stokens in info.get("sections_tokens", {}).items():
+                            if not stokens:
+                                continue
+                            # 计算章节与查询的直接匹配度
+                            title_overlap = len(q_tokens & stokens) / max(1, len(q_tokens))
+                            
+                            # 使用从 .env 读取的阈值判断是否保留该章节
+                            if title_overlap >= min_title_overlap:
+                                # 如果章节标题与查询有足够匹配，给予相应优先级
+                                section_priority_scores[title] = title_overlap
+                                if title not in matched_section_titles:
+                                    matched_section_titles.append(title)
                         continue
-
+    
                 # 部分标题匹配：使用预计算的 sections_tokens
                 for title, stokens in info.get("sections_tokens", {}).items():
                     if not stokens:
                         continue
                     overlap = len(q_tokens & stokens) / max(1, len(q_tokens))
-                    if overlap >= match_threshold:
+                    if overlap >= min_title_overlap:  # 使用章节匹配阈值
                         matched_section_titles.append(title)
                         matched_filenames.append(fname)
-
+                        # 记录该章节的优先级分数
+                        section_priority_scores[title] = overlap
+    
             # 去重
             matched_section_titles = list(dict.fromkeys(matched_section_titles))
             matched_filenames = list(dict.fromkeys(matched_filenames))
+                
+            # 新增：按优先级分数对章节标题排序，确保明确匹配的章节排在前面
+            if section_priority_scores:
+                matched_section_titles.sort(
+                    key=lambda t: section_priority_scores.get(t, 0),
+                    reverse=True
+                )
+                logger.info(f"章节优先级排序完成：前 3 个为 {matched_section_titles[:3]}")
+                
+                # 🔧 关键改进：只保留优先级最高的章节（分数 >= 最高分的 80%）
+                if matched_section_titles and section_priority_scores:
+                    max_score = max(section_priority_scores.values())
+                    min_acceptable_score = max_score * 0.8  # 只保留高分章节
+                    filtered_sections = [
+                        t for t in matched_section_titles
+                        if section_priority_scores.get(t, 0) >= min_acceptable_score
+                    ]
+                    if filtered_sections:
+                        matched_section_titles = filtered_sections
+                        logger.info(f"筛选后保留 {len(matched_section_titles)} 个高相关性章节：{matched_section_titles[:3]}")
+            
+            # 🔧 新增：对文件名进行评分和过滤，避免过多无关文件进入白名单
+            if matched_filenames and section_priority_scores:
+                # 计算每个文件的最高章节匹配分
+                file_scores = {}
+                for fname in matched_filenames:
+                    # 找到该文件中所有章节的最高匹配分
+                    max_score = 0
+                    for title, score in section_priority_scores.items():
+                        # 检查该章节是否属于这个文件
+                        if fname in index:
+                            if title in index[fname].get("sections", []):
+                                max_score = max(max_score, score)
+                    if max_score > 0:
+                        file_scores[fname] = max_score
+                
+                # 只保留最高分 80% 以上的文件
+                if file_scores:
+                    max_file_score = max(file_scores.values())
+                    if max_file_score > 0:
+                        cutoff = max_file_score * 0.8
+                        filtered_files = [fn for fn, score in file_scores.items() if score >= cutoff]
+                        if filtered_files:
+                            matched_filenames = filtered_files
+                            logger.info(f"[smart_search] 文件过滤：从 {len(file_scores)} 个保留 {len(filtered_files)} 个高相关文件：{matched_filenames}")
 
             if not matched_section_titles and not matched_filenames:
                 # fallback to hybrid vector+reranker search (固定返回 top_k=60，以保证足够上下文)
@@ -515,17 +599,41 @@ class VectorRetriever:
 
             # 构建 ChromaDB 的过滤条件
             where_clause = None
-            ors = []
+            
+            # 🔧 关键改进：当有章节匹配时，同时使用文件名 + 章节标题的 AND 条件
+            and_conditions = []
+            
             if matched_section_titles:
-                for t in matched_section_titles:
-                    ors.append({"section_title": t})
+                # 构建章节标题的 OR 条件
+                section_ors = [{"section_title": t} for t in matched_section_titles]
+                if len(section_ors) == 1:
+                    # 只有一个章节，直接添加
+                    and_conditions.append(section_ors[0])
+                else:
+                    # 多个章节，使用 OR 连接
+                    and_conditions.append({"$or": section_ors})
+                logger.info(f"[smart_search] 添加章节标题过滤条件：{matched_section_titles}")
+            
             if matched_filenames:
-                for fn in matched_filenames:
-                    # Use exact match on stored pdf_filename metadata (more reliable than substring)
-                    ors.append({"pdf_filename": {"$eq": fn}})
-
-            if ors:
-                where_clause = {"$or": ors}
+                # 构建文件名的 OR 条件
+                file_ors = [{"pdf_filename": {"$eq": fn}} for fn in matched_filenames]
+                if len(file_ors) == 1:
+                    # 只有一个文件，直接添加
+                    and_conditions.append(file_ors[0])
+                else:
+                    # 多个文件，使用 OR 连接
+                    and_conditions.append({"$or": file_ors})
+                logger.info(f"[smart_search] 添加文件名过滤条件：{matched_filenames}")
+            
+            # 组合所有条件
+            if and_conditions:
+                if len(and_conditions) == 1:
+                    # 只有一个条件，直接使用
+                    where_clause = and_conditions[0]
+                else:
+                    # 多个条件，使用 AND 连接
+                    where_clause = {"$and": and_conditions}
+                logger.info(f"[smart_search] 最终过滤条件：{where_clause}")
 
             # 加入页码范围过滤（如果指定）
             if page_range and isinstance(page_range, tuple) and len(page_range) == 2:

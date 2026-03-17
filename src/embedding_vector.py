@@ -256,9 +256,18 @@ class EmbeddingModel:
     
     def __init__(self, model_name: str = None, cache_size: int = 10000, cache_backend: str = "memory", disk_cache_dir: str = "src/data/emb_cache"):
         self.model_name = model_name or os.getenv("EMBEDDING_MODEL", "intfloat/multilingual-e5-large")
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model = None
-        self.tokenizer = None
+        
+        # 🔧 强制检测并使用 GPU
+        if torch.cuda.is_available():
+            self.device = "cuda"
+            gpu_name = torch.cuda.get_device_name(0)
+            gpu_mem = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            logger.info(f"✅ 检测到 GPU: {gpu_name} ({gpu_mem:.1f} GB)")
+        else:
+            self.device = "cpu"
+            logger.warning("⚠️ 未检测到 GPU，使用CPU 模式")
+        
+        logger.info(f"嵌入模型将运行在：{self.device}")
         self.cache = OrderedDict()
         self.cache_size = cache_size
         self.cache_backend = cache_backend
@@ -287,8 +296,23 @@ class EmbeddingModel:
         try:
             from sentence_transformers import SentenceTransformer
             
-            logger.info(f"加载嵌入模型: {self.model_name} (设备: {self.device})")
-            self.model = SentenceTransformer(self.model_name, device=self.device)
+            logger.info(f"正在从 HuggingFace 加载模型：{self.model_name}")
+            logger.info(f"目标设备：{self.device}")
+                        
+            # 🔧 强制使用 GPU 加速
+            if self.device == "cuda":
+                self.model = SentenceTransformer(
+                    self.model_name,
+                    device="cuda",
+                    model_kwargs={
+                        "torch_dtype": torch.float16,  # 使用半精度节省显存
+                        "device_map": "auto"  # 自动选择 GPU
+                    }
+                )
+                logger.info("✅ 模型已加载到 GPU（半精度加速）")
+            else:
+                self.model = SentenceTransformer(self.model_name, device="cpu")
+                logger.info("⚠️ 模型加载到 CPU")
             
             # 预热模型
             self.model.encode(["预热测试"], convert_to_tensor=False)
