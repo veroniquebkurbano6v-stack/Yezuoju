@@ -99,19 +99,34 @@ class VectorRetriever:
             logger.error(f"[VectorRetriever] ❌ 初始化失败：{e}", exc_info=True)
             raise
     
-    def search(self, query_embedding: List[float], top_k: int = 5, include_embeddings: bool = False) -> List[Dict[str, Any]]:
+    def search(self, 
+         query_embedding: List[float], 
+         top_k: int = 5, 
+         include_embeddings: bool = False,
+         metadata_filter: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """
         向量相似度检索
         
         Args:
             query_embedding: 查询向量化后的向量
             top_k: 返回结果数量
-            include_embeddings: 是否包含 embedding 向量（用于 MMR）
-            
-        Returns:
-            匹配的文档块列表
+            include_embeddings: 是否包含 embedding 向量
+            metadata_filter: 元数据过滤条件，如 {'pdf_filename': '安徒生童话.pdf'}
         """
         try:
+            # 🔥 构建 where 过滤条件
+            where_condition = None
+            if metadata_filter:
+                where_condition = {}
+                for key, value in metadata_filter.items():
+                    # ChromaDB 支持 $eq, $ne, $in, $nin 等操作符
+                    if isinstance(value, list):
+                        where_condition[key] = {"$in": value}
+                    else:
+                        where_condition[key] = {"$eq": value}
+                
+                logger.info(f"[VectorRetriever] 🔍 使用元数据过滤：{where_condition}")
+            
             # 🔥 根据 include_embeddings 参数决定 include 内容
             include_list = ["documents", "metadatas", "distances"]
             if include_embeddings:
@@ -120,6 +135,7 @@ class VectorRetriever:
             results = self.collection.query(
                 query_embeddings=[query_embedding],
                 n_results=top_k,
+                where=where_condition,  # 🔥 使用 where 参数进行过滤
                 include=include_list
             )
             
@@ -181,27 +197,38 @@ class KeywordRetriever:
             logger.error(f"[KeywordRetriever] ❌ 初始化失败：{e}", exc_info=True)
             raise
     
-    def search(self, keywords: List[str], top_k: int = 5) -> List[Dict[str, Any]]:
+    def search(self, 
+         keywords: List[str], 
+         top_k: int = 5,
+         metadata_filter: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """
         关键词匹配检索
         
         Args:
             keywords: 关键词列表
             top_k: 返回结果数量
-            
-        Returns:
-            匹配的文档块列表
+            metadata_filter: 元数据过滤条件
         """
         try:
-            # 构建 where 条件（匹配 chapter 或 source 字段）
-            # ChromaDB 的 where 只支持简单等值匹配，复杂匹配需要 where_document
+            # 🔥 构建 where 过滤条件
+            where_condition = None
+            if metadata_filter:
+                where_condition = {}
+                for key, value in metadata_filter.items():
+                    if isinstance(value, list):
+                        where_condition[key] = {"$in": value}
+                    else:
+                        where_condition[key] = {"$eq": value}
+                
+                logger.info(f"[KeywordRetriever] 🔍 使用元数据过滤：{where_condition}")
             
-            # 使用全文搜索（在 document 字段中搜索）
+            # 使用全文搜索
             keyword_query = " ".join(keywords)
             
             results = self.collection.get(
                 where_document={"$contains": keyword_query},
-                limit=top_k * 2  # 先多取一些，后面再排序
+                where=where_condition,  # 🔥 新增：添加元数据过滤
+                limit=top_k * 2
             )
             
             # 按关键词匹配度排序
@@ -309,9 +336,10 @@ class HybridRetriever:
                top_k: int = 5,
                vector_weight: float = 0.7,
                keyword_weight: float = 0.3,
-               use_mmr: bool = True) -> List[Dict[str, Any]]:
+               use_mmr: bool = True,
+               metadata_filter: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """
-        混合检索（支持 MMR 多样性优化）
+        混合检索（支持 MMR 多样性优化和元数据过滤）
         
         Args:
             query: 查询文本
@@ -319,7 +347,8 @@ class HybridRetriever:
             top_k: 返回结果数量
             vector_weight: 向量检索权重（默认 0.7）
             keyword_weight: 关键词检索权重（默认 0.3）
-            use_mmr: 是否使用 MMR 增加多样性（默认 True）
+            use_mmr: 是否使用 MMR 多样性优化（默认 True）
+            metadata_filter: 元数据过滤条件（可选）
             
         Returns:
             排序后的混合检索结果
@@ -334,13 +363,18 @@ class HybridRetriever:
         vector_results = self.vector_retriever.search(
             query_embedding, 
             top_k=expanded_top_k,
-            include_embeddings=use_mmr
+            include_embeddings=use_mmr,
+            metadata_filter=metadata_filter  # 🔥 传递元数据过滤
         )
         
         # 3. 关键词检索（如果有关键词）
         keyword_results = []
         if keywords:
-            keyword_results = self.keyword_retriever.search(keywords, top_k=expanded_top_k)
+            keyword_results = self.keyword_retriever.search(
+                keywords, 
+                top_k=expanded_top_k,
+                metadata_filter=metadata_filter  # 🔥 传递元数据过滤
+            )
         
         # 4. 融合结果（简单的加权融合）
         if not keyword_results:
@@ -384,26 +418,11 @@ class HybridRetriever:
                 reverse=True
             )
         
-        # 5. 🔥 MMR 多样性选择（如果启用）
+        # 5. 🔥 MMR 多样性选择（如果启用）- 暂时禁用
         if use_mmr and len(fused_results) > top_k:
-            logger.info(f"[HybridRetriever] 使用 MMR 从 {len(fused_results)} 个候选中选择 {top_k} 个多样化文档")
-            
-            mmr = MMRRetriever(lambda_param=0.7)
-            
-            # 提取 embeddings
-            embeddings = [doc.get('embedding', []) for doc in fused_results]
-            
-            # 检查是否有 embeddings
-            if embeddings and len(embeddings[0]) > 0:
-                diverse_results = mmr.mmr_select(
-                    query_embedding=query_embedding,
-                    candidates=fused_results,
-                    candidate_embeddings=embeddings,
-                    k=top_k
-                )
-                return diverse_results
-            else:
-                logger.warning("[HybridRetriever] 未找到 embeddings，退化为直接截取 Top-K")
+            logger.info(f"[HybridRetriever] ⚠️ MMR 功能暂未启用")
+            # TODO: 需要实现 MMRRetriever 类
+            pass
         
         # 6. 直接返回 Top-K
         return fused_results[:top_k]
