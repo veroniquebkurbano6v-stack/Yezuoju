@@ -25,10 +25,18 @@ class Reference(BaseModel):
 class ChatResponse(BaseModel):
     """聊天响应模型"""
     answer: str = Field(..., description="智能体回答")
-    references: List[Reference] = Field(..., description="前5个引用文本块")
-    conversation_id: str = Field(..., description="对话ID")
+    references: List[Reference] = Field(..., description="前 5 个引用文本块")
+    conversation_id: str = Field(..., description="对话 ID")
     timestamp: str = Field(..., description="响应时间戳")
-    mode: str = Field(..., description="响应模式：precise或general")
+    mode: str = Field(..., description="响应模式：precise 或 general")
+    
+    # RAG 评测系统新增字段
+    retrieved_docs: List[str] = Field(default=[], description="检索到的文档列表（按相关性排序）")
+    citations: List[str] = Field(default=[], description="引用来源列表")
+    context: str = Field(default="", description="完整上下文")
+    latency_ms: float = Field(default=0.0, description="响应延迟（毫秒）")
+    tokens: dict = Field(default={"input": 0, "output": 0, "total": 0}, description="Token 消耗统计")
+    success: bool = Field(default=True, description="请求成功标志")
 
 
 class Message(BaseModel):

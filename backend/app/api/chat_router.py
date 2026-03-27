@@ -102,17 +102,20 @@ async def send_query(
     发送用户查询，获取智能体的回复
     
     Args:
-        request: 包含查询内容和可选对话ID的请求对象
+        request: 包含查询内容和可选对话 ID 的请求对象
     
     Returns:
-        包含智能体回答、引用来源和对话ID的响应对象
+        包含智能体回答、引用来源和对话 ID 的响应对象（包含 RAG 评测所需字段）
     """
+    import time
+    start_time = time.time()
+    
     try:
         logger.info(f"[send_query] ====== 开始处理查询 ======")
         logger.info(f"[send_query] 收到的原始 request.query: '{request.query}'")
         logger.info(f"[send_query] conversation_id: {request.conversation_id}")
         
-        # 生成或使用现有的对话ID
+        # 生成或使用现有的对话 ID
         conversation_id = request.conversation_id or str(uuid.uuid4())
         
         # 获取当前对话历史
@@ -121,7 +124,7 @@ async def send_query(
         # 直接使用原始查询，让 Agent 自动从查询中提取参数
         # Agent 现在会从 "[仅在文件：xxx.pdf]" 格式中自动提取 filter_pdf
         original_query = request.query
-        logger.info(f"[send_query] 使用原始查询: '{original_query}'")
+        logger.info(f"[send_query] 使用原始查询：'{original_query}'")
         
         # 调用智能体服务，让 Agent 自动处理参数提取
         result = agent_service.query(
@@ -130,34 +133,97 @@ async def send_query(
             chat_history=chat_history
         )
         
+        # 计算延迟
+        latency_ms = (time.time() - start_time) * 1000
+        
         # 格式化引用来源
         references = []
-        if result.get("tool_calls"):
-            # 从工具调用结果中提取引用
+        retrieved_docs = []
+        citations = []
+        context_chunks = []
+        
+        # 优先从 result 中获取 retrieved_docs（Agent 直接返回的检索结果）
+        if result.get("retrieved_docs"):
+            logger.info(f"[send_query] Agent 返回了 {len(result['retrieved_docs'])} 篇检索文档")
+            for doc in result["retrieved_docs"]:
+                # 构建引用对象
+                ref = Reference(
+                    text_preview=doc.get('document', '')[:150] + "..." if len(doc.get('document', '')) > 150 else doc.get('document', ''),
+                    section_title=doc.get('metadata', {}).get('section_title', '未知章节'),
+                    page_number=doc.get('metadata', {}).get('page_number', 0),
+                    score=doc.get('score', 0),
+                    pdf_filename=doc.get('metadata', {}).get('pdf_filename', '未知文件')
+                )
+                references.append(ref)
+                
+                # 构建检索到的文档列表（用于评测）
+                doc_text = f"[{doc.get('metadata', {}).get('section_title', '')}] {doc.get('document', '')}"
+                retrieved_docs.append(doc_text)
+                
+                # 构建引用列表
+                citations.append(doc.get('metadata', {}).get('section_title', ''))
+                
+                # 构建上下文
+                context_chunks.append(doc.get('document', ''))
+        elif result.get("tool_calls"):
+            # 兼容旧版本：从工具调用结果中提取引用
+            logger.info(f"[send_query] 从 tool_calls 中提取引用信息")
             for tool_call in result["tool_calls"]:
                 if tool_call.get("output"):
                     for doc in tool_call["output"]:
-                        references.append(Reference(
+                        # 构建引用对象
+                        ref = Reference(
                             text_preview=doc.text[:150] + "..." if len(doc.text) > 150 else doc.text,
                             section_title=doc.section_title,
                             page_number=doc.page_number,
                             score=doc.score,
                             pdf_filename=doc.pdf_filename if hasattr(doc, "pdf_filename") else "未知文件"
-                        ))
+                        )
+                        references.append(ref)
+                        
+                        # 构建检索到的文档列表（用于评测）
+                        doc_text = f"[{doc.section_title}] {doc.text}"
+                        retrieved_docs.append(doc_text)
+                        
+                        # 构建引用列表
+                        citations.append(doc.section_title)
+                        
+                        # 构建上下文
+                        context_chunks.append(doc.text)
         
-        # 限制最多5个引用
+        # 限制最多 5 个引用
         references = references[:5]
+        retrieved_docs = retrieved_docs[:10]  # 最多 10 个检索文档
+        citations = citations[:5]  # 最多 5 个引用
+        
+        # 构建完整上下文
+        context = ".".join(context_chunks)
+        
+        # 估算 Token 消耗（简单估算：中文字符数 / 2）
+        input_tokens = len(original_query) + len(context)
+        output_tokens = len(result.get("answer", ""))
+        tokens = {
+            "input": input_tokens // 2,
+            "output": output_tokens // 2,
+            "total": (input_tokens + output_tokens) // 2
+        }
         
         # 生成时间戳
         timestamp = datetime.now().isoformat()
         
-        # 构建响应
+        # 构建响应（包含所有评测所需字段）
         response = ChatResponse(
             answer=result["answer"],
             references=references,
             conversation_id=conversation_id,
             timestamp=timestamp,
-            mode="precise"  # 目前默认使用精确模式
+            mode="precise",  # 目前默认使用精确模式
+            retrieved_docs=retrieved_docs,
+            citations=citations,
+            context=context,
+            latency_ms=latency_ms,
+            tokens=tokens,
+            success=result.get("success", True)
         )
         
         # 更新对话历史
@@ -182,9 +248,10 @@ async def send_query(
         return response
         
     except Exception as e:
+        latency_ms = (time.time() - start_time) * 1000
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"处理查询失败: {str(e)}"
+            detail=f"处理查询失败：{str(e)}"
         )
 
 @chat_router.get("/history", response_model=ChatHistoryResponse, summary="获取对话历史")

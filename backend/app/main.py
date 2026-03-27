@@ -8,8 +8,10 @@ import sys
 from pathlib import Path
 from dotenv import load_dotenv
 
-# 加载环境变量配置
-load_dotenv()
+# 加载环境变量配置（显式指定项目根目录的 .env 文件）
+project_root = Path(__file__).resolve().parents[2]  # 项目根目录
+env_path = project_root / ".env"
+load_dotenv(dotenv_path=env_path)
 
 # 确保项目src和backend目录可被Python导入
 project_root = Path(__file__).resolve().parents[2]  # 项目根目录: StoryRag v2.0
@@ -25,11 +27,17 @@ from pydantic import BaseModel
 import logging
 
 # 配置日志记录器
+import sys
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    stream=sys.stderr
+)
 logger = logging.getLogger(__name__)
 
 # 核心功能模块导入
-from embedding_vector import VectorSearchSystem  # 向量检索系统
-from deepseek_agent import create_deepseek_agent  # DeepSeek AI代理
+from mixed_retrieval import VectorRetriever  # 向量检索器
+from deepseek_agent import create_deepseek_agent  # DeepSeek AI 代理
 
 # API路由导入 - 使用相对导入
 from app.api.dialogs import router as dialogs_router  # 对话相关路由
@@ -44,72 +52,116 @@ class QueryRequest(BaseModel):
 
 def create_app() -> FastAPI:
     """
-    创建并配置FastAPI应用程序
+    创建并配置 FastAPI 应用程序
     包含路由、中间件、事件处理器和依赖注入配置
     """
-    # 创建FastAPI应用实例，设置应用标题
+    sys.stderr.write("[DEBUG] 开始执行 create_app()\n")
+    sys.stderr.flush()
+    # 创建 FastAPI 应用实例，设置应用标题
     app = FastAPI(title="StoryRag Backend - Retrieval API")
     
-    # 配置CORS中间件，允许跨域访问
+    # 配置 CORS 中间件，允许跨域访问
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],  # 允许所有域名访问
         allow_credentials=True,  # 允许携带凭据（cookies、认证头等）
-        allow_methods=["*"],  # 允许所有HTTP方法
-        allow_headers=["*"],  # 允许所有HTTP头
+        allow_methods=["*"],  # 允许所有 HTTP 方法
+        allow_headers=["*"],  # 允许所有 HTTP 头
     )
 
-    # 注册API路由 - 先注册API路由，再挂载静态文件
-    # 避免静态文件路由覆盖API路由的问题
-    app.include_router(dialogs_router)  # 注册对话相关路由
-    app.include_router(chat_router, prefix="/api")  # 注册聊天路由，添加/api前缀
+    # 注册 API 路由 - 先注册 API 路由，再挂载静态文件
+    # 避免静态文件路由覆盖 API 路由的问题
+    sys.stderr.write(f"[DEBUG] 注册 dialogs_router，前缀：/api/dialogs，路由数：{len(dialogs_router.routes)}\n")
+    sys.stderr.flush()
+    logger.info(f"注册 dialogs_router，前缀：/api/dialogs，路由数：{len(dialogs_router.routes)}")
+    app.include_router(dialogs_router, prefix="/api/dialogs")  # 注册对话相关路由，添加/api/dialogs 前缀
+    sys.stderr.write(f"[DEBUG] 注册 chat_router，前缀：/api/chat，路由数：{len(chat_router.routes)}\n")
+    sys.stderr.flush()
+    logger.info(f"注册 chat_router，前缀：/api/chat，路由数：{len(chat_router.routes)}")
+    app.include_router(chat_router, prefix="/api/chat")  # 注册聊天路由，添加/api/chat 前缀
 
     # 应用启动事件处理器 - 初始化所有重量级组件
     @app.on_event("startup")
     async def startup_event():
         """
         应用启动时的初始化事件
-        包含向量检索系统、LangChain工具、DeepSeek代理等组件的初始化
+        包含向量检索系统、LangChain 工具、DeepSeek 代理等组件的初始化
         """
+        logger.info("="*60)
+        logger.info("开始执行应用启动初始化...")
+        logger.info("="*60)
+        
         # 从环境变量读取配置，设置默认值
-        db_path = os.getenv("VECTOR_DB_PATH", "src/data/vector_database")
+        # 使用绝对路径，避免从 backend 目录运行时路径解析错误
+        db_path = os.getenv("VECTOR_DB_PATH")
+        if not db_path:
+            # 如果没有设置环境变量，使用项目根目录的相对路径
+            project_root = Path(__file__).resolve().parents[2]  # 返回到项目根目录
+            db_path = str(project_root / "src" / "data" / "vector_database")
+        else:
+            # 如果是相对路径，转换为绝对路径
+            db_path = os.path.abspath(db_path)
+        
         embedding_model = os.getenv("EMBEDDING_MODEL", "intfloat/multilingual-e5-large")
         logger.info(f"启动向量检索系统，db_path={db_path} embedding_model={embedding_model}")
-        
-        # 初始化向量检索系统
+            
+        # 初始化向量检索器
         try:
-            # 创建向量检索系统实例
-            app.state.vector_system = VectorSearchSystem(db_path)
-            # 初始化检索器（加载必要的组件：嵌入模型、Reranker、元数据索引等）
-            app.state.vector_system.initialize_retriever()
-            logger.info("向量检索系统初始化成功")
+            logger.info("开始初始化 VectorRetriever...")
+            # 创建向量检索器实例
+            app.state.vector_retriever = VectorRetriever(db_path)
+            logger.info("✅ VectorRetriever 初始化成功")
         except Exception as e:
-            logger.error(f"无法初始化向量检索系统: {e}")
-            app.state.vector_system = None  # 设置为None以避免后续使用时出错
+            logger.error(f"❌ 无法初始化 VectorRetriever: {e}", exc_info=True)
+            app.state.vector_retriever = None  # 设置为 None 以避免后续使用时出错
 
-        # 初始化LangChain工具（复用VectorSearchSystem已初始化的组件，避免重复加载）
+        # 初始化 LangChain 工具（使用现有工具类）
         try:
-            from langchain_tools import get_langchain_tools
-            # 复用已初始化的组件，避免重复创建EmbedddingModel和RerankerModel
-            vector_system = app.state.vector_system
-            if vector_system is not None:
-                app.state.langchain_tools = get_langchain_tools(
-                    db_path,
-                    embedding_model,
-                    vector_db=vector_system.vector_db,
-                    embedding_model=vector_system.embedding_model,
-                    reranker_model=vector_system.reranker_model
+            logger.info("开始初始化 LangChain tools...")
+            from langchain_retrieval_tools import SmartRetrievalTool
+            from langchain_core.tools import Tool
+                    
+            # 创建工具实例
+            logger.info("创建 SmartRetrievalTool 实例...")
+            smart_retrieval = SmartRetrievalTool()
+            logger.info("✅ SmartRetrievalTool 创建成功")
+                    
+            app.state.langchain_tools = [
+                Tool(
+                    name="smart_retrieval",
+                    func=smart_retrieval._run,
+                    description="智能检索工具，根据问题类型自动选择最优检索策略"
                 )
-            else:
-                # 如果VectorSearchSystem初始化失败，创建独立的LangChain工具
-                app.state.langchain_tools = get_langchain_tools(db_path, embedding_model)
-            logger.info("LangChain tools 已初始化")
+            ]
+            logger.info(f"✅ LangChain tools 已初始化，共 {len(app.state.langchain_tools)} 个工具")
         except Exception as e:
-            logger.error(f"LangChain tools 初始化失败: {e}")
+            logger.error(f"❌ LangChain tools 初始化失败：{e}", exc_info=True)
             app.state.langchain_tools = None
-
-        # 初始化DeepSeek代理（可选功能，需要API密钥）
+                
+        # 预初始化 DeepSeek 智能体服务（懒加载改为预加载）
         api_key = os.getenv("DEEPSEEK_API_KEY")
+        if api_key:
+            try:
+                logger.info("开始预初始化 DeepSeek 智能体服务...")
+                from app.agents.agent_service import DeepSeekAgentService
+                from app.core.config import settings
+                                
+                # 创建智能体服务实例并存储到 app.state
+                app.state.agent_service = DeepSeekAgentService(
+                    vector_db_path=settings.VECTOR_DB_PATH,
+                    api_key=settings.DEEPSEEK_API_KEY,
+                    base_url=settings.DEEPSEEK_BASE_URL,
+                    embedding_model=settings.EMBEDDING_MODEL
+                )
+                logger.info("✅ DeepSeek 智能体服务预初始化完成")
+            except Exception as e:
+                logger.error(f"❌ DeepSeek 智能体服务初始化失败：{e}", exc_info=True)
+                app.state.agent_service = None
+        else:
+            logger.warning("⚠️  未配置 DEEPSEEK_API_KEY，跳过智能体服务初始化")
+            app.state.agent_service = None
+                
+        # 保留旧的 agent 初始化逻辑以兼容
         if api_key:
             try:
                 app.state.agent = create_deepseek_agent(
@@ -120,10 +172,10 @@ def create_app() -> FastAPI:
                 )
                 logger.info("DeepSeek agent 已初始化")
             except Exception as e:
-                logger.warning(f"DeepSeek agent 初始化失败: {e}")
+                logger.warning(f"DeepSeek agent 初始化失败：{e}")
                 app.state.agent = None
         else:
-            logger.info("未配置DEEPSEEK_API_KEY，跳过DeepSeek agent初始化")
+            logger.info("未配置 DEEPSEEK_API_KEY，跳过 DeepSeek agent 初始化")
             app.state.agent = None
 
     # 应用关闭事件处理器
@@ -133,12 +185,12 @@ def create_app() -> FastAPI:
         logger.info("应用停止，释放资源")
 
     # 依赖注入提供者函数
-    def get_vector_system():
+    def get_vector_retriever():
         """
-        向量检索系统依赖注入函数
-        返回已初始化的vector system（如果存在），避免重复初始化
+        向量检索器依赖注入函数
+        返回已初始化的 vector_retriever（如果存在），避免重复初始化
         """
-        return app.state.vector_system
+        return app.state.vector_retriever
 
     def get_agent():
         """
@@ -147,37 +199,24 @@ def create_app() -> FastAPI:
         """
         return getattr(app.state, "agent", None)
 
-    # 核心查询API端点
-    @app.post("/api/query")
-    async def query(req: QueryRequest, vector_system = Depends(get_vector_system), agent = Depends(get_agent)):
-        """
-        文档检索查询接口
-        接收用户问题，返回相关的文档片段和检索结果
-        """
-        # 检查向量检索系统是否已正确初始化
-        if vector_system is None:
-            return {"error": "Vector system not initialized"}
-
-        # 执行向量搜索，使用Reranker进行重排序
-        results = vector_system.search(req.question, top_k=req.top_k, use_reranker=True)
-        
-        # 将结果格式化为简单的字典格式，便于前端使用
-        out = []
-        for r in results:
-            out.append({
-                "text": r.text,  # 文档片段内容
-                "section_title": r.section_title,  # 章节标题
-                "page_number": r.page_number,  # 页码
-                "score": float(r.score),  # 相似度分数
-                "pdf_filename": r.pdf_filename,  # PDF文件名
-                "chunk_id": r.chunk_id  # 文档块ID
-            })
-
-        return {
-            "query": req.question,  # 原问题
-            "results": out,  # 检索结果列表
-            "count": len(out)  # 结果数量
-        }
+    # 核心查询 API 端点 - 已移至 chat_router 中实现
+    # @app.post("/api/query")
+    # async def query(req: QueryRequest, vector_retriever = Depends(get_vector_retriever), agent = Depends(get_agent)):
+    #     """
+    #     文档检索查询接口
+    #     接收用户问题，返回相关的文档片段和检索结果
+    #     """
+    #     # 检查向量检索器是否已正确初始化
+    #     if vector_retriever is None:
+    #         return {"error": "Vector retriever not initialized"}
+    #    
+    #     # TODO: 使用 vector_retriever 实现查询逻辑
+    #     # 目前返回一个占位响应
+    #     return {
+    #         "question": req.question,
+    #         "results": [],
+    #         "message": "Query endpoint needs implementation with vector_retriever"
+    #     }
 
     # 挂载前端静态文件 - 最后执行，避免覆盖API路由
     frontend_path = Path(__file__).resolve().parents[2] / "frontend" / "dist"

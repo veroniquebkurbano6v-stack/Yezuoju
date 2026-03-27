@@ -22,14 +22,15 @@ export default function Star({
       setShowPing(true);
       timeoutRef.current = setTimeout(() => {
         setShowPing(false);
-        if (onAnimationComplete) {
+        // 安全检查：确保 onAnimationComplete 是函数
+        if (typeof onAnimationComplete === 'function') {
           onAnimationComplete();
         }
       }, 1500);
     } else {
       setShowPing(false);
     }
-  }, [isActive, onAnimationComplete, color, size]);
+  }, [isActive, onAnimationComplete]);
 
   useEffect(() => {
     return () => {

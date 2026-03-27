@@ -1,6 +1,6 @@
 """
-DeepSeek智能检索代理系统
-集成DeepSeek模型和LangChain工具，实现自主检索和问答
+DeepSeek 智能检索代理系统
+集成 DeepSeek 模型和 LangChain 工具，实现自主检索和问答
 """
 
 import os
@@ -8,43 +8,25 @@ import json
 import logging
 from typing import List, Dict, Any, Optional
 from langchain_openai import ChatOpenAI
-from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-
-from langchain_tools import get_langchain_tools
+from langchain_core.tools import Tool, render_text_description
+from langgraph.prebuilt import create_react_agent
 
 logger = logging.getLogger(__name__)
 
-TOOL_PARAM_PROMPT = """你是一个专业的文档检索助手。
-
-用户查询：{query}
-
-请从用户查询中提取以下信息并以JSON格式返回：
-- query: 用户的查询内容（必须原样提取，不能修改）
-- filter_pdf: 用户指定的PDF文件名（如果没有指定则为None）
-
-要求：
-1. query 必须完全等于用户查询，不能修改、添加或删除任何内容
-2. 如果用户没有指定PDF文件，filter_pdf 必须是 null
-3. 只返回JSON对象，不要有任何其他内容
-
-JSON格式：
-{{"query": "用户查询内容", "filter_pdf": "文件名.pdf或null"}}
-"""
-
 
 class DeepSeekRetrievalAgent:
-    """DeepSeek智能检索代理"""
+    """DeepSeek 智能检索代理"""
 
     def __init__(self, vector_db_path: str, api_key: str = None, base_url: str = None,
                  embedding_model: str = "intfloat/multilingual-e5-large", tools_instance=None):
         """
-        初始化DeepSeek检索代理
+        初始化 DeepSeek 检索代理
 
         Args:
             vector_db_path: 向量数据库路径
-            api_key: DeepSeek API密钥
-            base_url: DeepSeek API基础URL
+            api_key: DeepSeek API 密钥
+            base_url: DeepSeek API 基础 URL
             embedding_model: 嵌入模型名称
             tools_instance: 已初始化的 langchain tools 实例（可选，避免重复初始化）
         """
@@ -54,8 +36,9 @@ class DeepSeekRetrievalAgent:
         self.embedding_model = embedding_model
 
         if not self.api_key:
-            raise ValueError("DeepSeek API密钥未设置。请设置DEEPSEEK_API_KEY环境变量或直接传入api_key参数。")
+            raise ValueError("DeepSeek API 密钥未设置。请设置 DEEPSEEK_API_KEY 环境变量或直接传入 api_key 参数。")
 
+        # 初始化 DeepSeek 模型
         self.llm = ChatOpenAI(
             model="deepseek-chat",
             api_key=self.api_key,
@@ -64,55 +47,167 @@ class DeepSeekRetrievalAgent:
             max_tokens=2000
         )
 
-        logger.info("DeepSeek模型初始化完成")
+        logger.info("DeepSeek 模型初始化完成")
 
+        # 初始化工具
         if tools_instance is not None:
+            self.tools_instance = tools_instance
             self.tools = tools_instance.tools
-            self.smart_retrieval = tools_instance.smart_retrieval
-            self.smart_retrieval_impl = tools_instance.smart_retrieval_impl
-            self.tools_instance = tools_instance  # 保存工具实例引用以访问缓存
             logger.info("复用已初始化的 langchain tools")
         else:
-            tools_instance = get_langchain_tools(self.vector_db_path, self.embedding_model)
-            self.tools = tools_instance.tools
-            self.smart_retrieval = tools_instance.smart_retrieval
-            self.smart_retrieval_impl = tools_instance.smart_retrieval_impl
-            self.tools_instance = tools_instance  # 保存工具实例引用以访问缓存
+            # 添加 src 目录到 Python 路径
+            import sys
+            from pathlib import Path
+            src_path = Path(__file__).resolve().parent
+            if str(src_path) not in sys.path:
+                sys.path.insert(0, str(src_path))
+            
+            logger.info("[DeepSeekAgent] 开始创建 LangChain 工具...")
+            try:
+                from langchain_retrieval_tools import SmartRetrievalTool
+                logger.info("[DeepSeekAgent] 导入成功，开始创建工具实例...")
+                
+                # 创建工具实例
+                logger.info("[DeepSeekAgent] 创建 SmartRetrievalTool...")
+                self.smart_retrieval = SmartRetrievalTool()
+                logger.info("[DeepSeekAgent] SmartRetrievalTool 创建成功")
+                
+                self.tools = [
+                    self.smart_retrieval,   # 只保留智能检索工具
+                ]
+                logger.info(f"[DeepSeekAgent] LangChain 工具初始化完成，共 {len(self.tools)} 个工具")
+                self.tools_instance = None
+            except Exception as e:
+                logger.error(f"[DeepSeekAgent] ❌ 工具创建失败：{e}", exc_info=True)
+                raise
 
-        self.param_parser = JsonOutputParser()
-        self.param_prompt = ChatPromptTemplate.from_messages([
-            ("human", TOOL_PARAM_PROMPT)
-        ])
+        logger.info(f"LangChain 工具初始化完成，共 {len(self.tools)} 个工具")
 
-        logger.info("DeepSeek检索代理初始化完成")
+        # 创建 Agent - 使用优化的系统消息（减少 API 调用次数）
+        self.system_message = """你是一个专业的文档检索助手。
 
-    def _extract_params(self, query: str) -> Dict[str, Any]:
-        """从用户查询中提取工具参数"""
-        try:
-            chain = self.param_prompt | self.llm | self.param_parser
-            result = chain.invoke({"query": query})
-            logger.info(f"[DeepSeekAgent] 提取参数: {result}")
-            return result
-        except Exception as e:
-            logger.warning(f"[DeepSeekAgent] 参数提取失败，使用原始查询: {e}")
-            return {"query": query, "filter_pdf": None}
+【重要】为了快速响应用户，你必须遵循以下原则：
+
+## 🚀 核心工作流（一步检索）
+
+**首选方案：直接调用 smart_retrieval 工具，并传入分析结果**
+
+smart_retrieval 是一个智能检索工具，它会根据你提供的信息执行检索。
+
+✅ **推荐调用方式**（只需 1 次工具调用）：
+```
+smart_retrieval(query="用户问题", keywords=["分析出的关键词"])
+```
+
+### 🔍 你需要在调用前完成分析：
+
+**1. 自动分析问题类型**（4 类之一）：
+   - 故事梗概：询问书籍、章节的主要内容、情节概要等
+   - 事实依据：询问历史事实、时间、地点、数据等具体信息
+   - 特定人物或人物之间的关系：询问人物身份、关系、特征等
+   - 段落情节：询问具体事件经过、原因、详细情节等
+
+**2. 自动提取和扩展关键词**：
+   - 原始实体：人物名、文件名、特殊词汇、时间地点、事件名等
+   - 职业身份扩展：如"家庭状况"→["职业", "田地", "租种", "佃农", "贫农"]
+   - 经济条件扩展：如"家境"→["贫富", "无地", "赤贫", "食不果腹"]
+   - 亲属关系扩展：如询问某人时扩展到其父母、配偶、子女等
+   - 同义词扩展：如"建立"→["创立", "组建", "成立"]
+   - 相关概念扩展：如询问"屠杀功臣"扩展到"政治整肃"、"清洗"
+   
+   ⚠️ **重要要求**：
+   - 尽可能提取所有相关实体，不要遗漏
+   - 每个独立的实体都要单独列出
+   - 如果是复合问题（包含多个子问题），要提取所有子问题中的关键词
+   - 在原始关键词基础上，进一步扩展 3-5 个相关词汇
+
+**3. 立即调用检索工具**：
+   - 不需要单独调用 query_classifier！
+   - 直接把分析结果传给 smart_retrieval
+
+## 🛠️ 可用工具
+
+1. **smart_retrieval** (推荐使用 ⭐⭐⭐⭐⭐)
+   - 智能检索工具，执行混合检索和重排序
+   - 参数：query (必需), query_type (可选), keywords (可选), top_k (可选)
+   - **建议：传递 query 和你分析出的 keywords**
+
+2. ~~query_classifier~~ (已废弃 ❌)
+   - 不要使用这个工具！
+   - 你自己就能完成分析工作
+
+## ⚠️ 回答规范（至关重要）
+
+**你必须严格遵守以下回答格式：**
+
+1. **答案优先** (前 30 字必须包含核心信息)
+   - ✅ 正确："朱元璋出生于赤贫家庭，父亲朱五四是佃农..."
+   - ❌ 错误："根据检索到的文档，我们可以看到..."（废话）
+
+2. **简洁准确** (200-600 字最佳)
+   - 避免冗长 (>800 字会显得啰嗦)
+   - 避免过于简略 (<100 字信息不足)
+
+3. **仅基于检索结果回答**
+   - 所有答案必须有文档来源
+   - 禁止使用你的训练数据或常识
+   - 如果文档中没有，直接说"未找到相关信息"
+
+4. **结构化呈现**
+   - 使用小标题：`### 1. 家庭背景`
+   - 使用列表：`- 父母：朱五四 `
+   - 关键信息加粗：`**赤贫家庭**`
+
+5. **禁止幻觉**
+   - ✅ "文档中未提及此信息"
+   - ❌ "根据常识..."（这是禁止的！）
+
+## 💡 工作流程示例
+
+**用户问**："朱元璋出生时的家庭状况如何？"
+
+**你应该**：
+1. **分析问题类型**：事实依据（询问家庭经济状况）
+2. **提取关键词**：['朱元璋', '出生', '家庭状况', '家庭背景', '家境', '职业', '田地', '租种', '佃农', '贫农']
+3. **立即调用**：`smart_retrieval(query="朱元璋出生时的家庭状况如何？", keywords=['朱元璋', '出生', '家庭状况', '家庭背景', '家境', '职业', '田地', '租种', '佃农', '贫农'])`
+4. **等待检索结果**（5 篇文档）
+5. **基于文档立即回答**："朱元璋出生于赤贫家庭。### 1. 居住条件 - 茅草房三间..."
+
+**不要**：
+- ~~先调用 query_classifier 分析问题~~（浪费时间！）
+- ~~调用多个工具~~（只需要 1 次！）
+- 多次调用检索工具（没必要）
+- 在回答前添加"根据检索到的文档"这样的废话
+
+## 🎯 性能要求
+
+- **只调用 1 次工具**：smart_retrieval(query="...")
+- **立即回答**：拿到检索结果后直接组织答案
+- **拒绝多余步骤**：不需要单独分析问题
+
+记住：用户需要快速、准确的答案，不需要看到你的分析过程！**一次调用，立即回答！**"""
+
+        # 使用 LangGraph 创建 ReAct Agent
+        self.agent_executor = create_react_agent(self.llm, self.tools)
+
+        logger.info("DeepSeek Agent 创建完成")
 
     def chat(self, user_input: str, chat_history: List[Dict[str, str]] = None) -> Dict[str, Any]:
         """
-        与DeepSeek检索代理对话
+        与 DeepSeek 检索代理对话
 
         Args:
             user_input: 用户输入的问题
-            chat_history: 对话历史记录（仅用于最终回答，不影响检索）
+            chat_history: 对话历史记录
 
         Returns:
             包含回答和工具调用信息的字典
         """
         try:
-            logger.info(f"[DeepSeekAgent.chat] 用户输入: '{user_input}'")
-            logger.info(f"[DeepSeekAgent.chat] 聊天历史长度: {len(chat_history) if chat_history else 0}")
+            logger.info(f"[DeepSeekAgent.chat] 用户输入：'{user_input}'")
+            logger.info(f"[DeepSeekAgent.chat] 聊天历史长度：{len(chat_history) if chat_history else 0}")
 
-            if not self.tools or not self.smart_retrieval:
+            if not self.tools:
                 return {
                     "success": False,
                     "user_input": user_input,
@@ -120,174 +215,124 @@ class DeepSeekRetrievalAgent:
                     "chat_history": chat_history or []
                 }
 
-            params = self._extract_params(user_input)
-            query = params.get("query", user_input)
-            filter_pdf = params.get("filter_pdf")
-
-            # 初始化最终答案变量
-            final_answer = None
-            answer_source = "none"
-
-            logger.info(f"[DeepSeekAgent] 执行检索: query='{query}', filter_pdf={filter_pdf}")
-
-            import json
-            query_request_json = json.dumps({"query": query, "filter_pdf": filter_pdf}, ensure_ascii=False)
-
-            # 调用智能检索工具（只调用一次）
-            try:
-                tool_result = self.smart_retrieval.invoke({"query_request_json": query_request_json, "top_k": 60})
-            except Exception:
-                # 如果是普通函数，调用原始函数
-                tool_result = self.smart_retrieval(query_request_json, top_k=60)
-
-            # 从工具实例中获取缓存的原始检索结果（避免重复调用）
-            retrieved_docs = []  # 先初始化为空列表
-            try:
-                # _last_raw_results 存储在 tools_instance 上
-                raw_results = self.tools_instance._last_raw_results if hasattr(self.tools_instance, '_last_raw_results') else []
-                for r in raw_results:
-                    retrieved_docs.append({
-                        "pdf_filename": r.pdf_filename or "未知文件",
-                        "section_title": r.section_title or "未知章节",
-                        "page_number": int(r.page_number) if r.page_number is not None else 0,
-                        "score": float(r.score) if r.score is not None else 0,
-                        "text": r.text[:200] + "..." if r.text and len(r.text) > 200 else r.text,
-                        "matched": getattr(r, 'matched', True)
-                    })
-            except Exception as e:
-                logger.warning(f"获取原始检索结果失败：{e}")
-                retrieved_docs = []
-
-            # 调试日志：记录检索结果状态
-            logger.info(f"[DeepSeekAgent] retrieved_docs 数量: {len(retrieved_docs)}")
-            if retrieved_docs:
-                logger.info(f"[DeepSeekAgent] 第一个结果: {retrieved_docs[0].get('pdf_filename', 'N/A')} / {retrieved_docs[0].get('section_title', 'N/A')}")
-
-            # 判断是否有检索结果
-            has_retrieved = len(retrieved_docs) > 0
-            has_matched = any(doc.get('matched', True) for doc in retrieved_docs) if retrieved_docs else False
-
-            logger.info(f"[DeepSeekAgent] has_retrieved: {has_retrieved}, has_matched: {has_matched}")
-
-            logger.info(f"[DeepSeekAgent] 进入主流程（检索回答）")
-
-            # 如果没有检索结果，尝试基于对话历史回答
-            if not has_retrieved or not has_matched:
-                logger.info(f"[DeepSeekAgent] 进入历史回答分支")
-                logger.info(f"[DeepSeekAgent] 无检索结果，尝试基于历史记录回答，历史长度: {len(chat_history) if chat_history else 0}")
-
-                if chat_history and len(chat_history) > 0:
-                    # 构建基于历史记录的回答提示
-                    history_text = ""
-                    for msg in chat_history[-10:]:  # 只使用最近10轮对话
-                        role = msg.get("role", "user")
-                        content = msg.get("content", "")
-                        history_text += f"- {role}: {content[:200]}\n" if len(content) > 200 else f"- {role}: {content}\n"
-
-                    # 检查最近一条助手回答是否包含具体引用信息
-                    last_assistant_msg = None
-                    for msg in reversed(chat_history):
-                        if msg.get("role") == "assistant":
-                            last_assistant_msg = msg
-                            break
-
-                    history_based_prompt = f"""基于以下对话历史记录回答用户当前问题：
-
-【对话历史】
-{history_text}
-
-【当前问题】
-{user_input}
-
-请根据上述对话历史回答当前问题。如果历史记录中包含相关信息，请整理后回答；特别注意：如果历史记录中的assistant回答包含具体引用（如页码、章节），请直接使用这些信息进行扩展回答。
-
-要求：
-- 如果历史记录中有相关信息，采用结构化格式回答
-- 优先使用历史记录中已有的具体引用和论据进行扩展
-- 如果历史记录中没有相关信息，直接说明无法回答并引导用户提供更多信息
-- 不要编造信息"""
-
-                    try:
-                        history_response = self.llm.invoke(history_based_prompt)
-                        final_answer = history_response.content if hasattr(history_response, 'content') else str(history_response)
-                        answer_source = "history"
-                    except Exception as e:
-                        logger.warning(f"基于历史记录回答失败: {e}")
-                        final_answer = None
-                        answer_source = "none"
-                else:
-                    final_answer = None
-                    answer_source = "none"
-
-            logger.info(f"[DeepSeekAgent] 历史分支处理完成，final_answer是否为空: {final_answer is None}, answer_source: {answer_source}")
-
-            # 始终构建历史文本（无论检索是否成功，都参考历史对话）
-            history_text = ""
+            # 使用 Agent Executor 执行
+            logger.info("[DeepSeekAgent] 调用 Agent Executor...")
+            
+            # 构建消息列表
+            from langchain_core.messages import HumanMessage, SystemMessage
+            
+            messages = []
+            
+            # 添加系统消息
+            if self.system_message:
+                messages.append(SystemMessage(content=self.system_message))
+            
+            # 添加对话历史
             if chat_history and len(chat_history) > 0:
-                for msg in chat_history[-10:]:  # 使用最近10轮对话
-                    role = msg.get("role", "user")
-                    content = msg.get("content", "")
-                    history_text += f"- {role}: {content[:200]}\n" if len(content) > 200 else f"- {role}: {content}\n"
+                for msg in chat_history[-10:]:  # 只使用最近 10 轮对话
+                    if msg.get("role") == "user":
+                        messages.append(HumanMessage(content=msg["content"]))
+                    elif msg.get("role") == "assistant":
+                        from langchain_core.messages import AIMessage
+                        messages.append(AIMessage(content=msg["content"]))
+            
+            # 添加当前用户输入
+            messages.append(HumanMessage(content=user_input))
+            
+            logger.info(f"[DeepSeekAgent] 消息列表长度：{len(messages)}")
 
-            # 基于检索结果回答（始终考虑历史记录）
-            if final_answer is None:
-                # 调用DeepSeek模型基于检索结果回答用户问题
-                analysis_prompt = f"""用户问题：{user_input}
+            # 执行 Agent
+            response = self.agent_executor.invoke({"messages": messages})
+            
+            logger.info(f"[DeepSeekAgent] Agent 执行完成")
+            
+            # 从响应中提取最后的 AI 消息和工具调用信息
+            final_answer = ""
+            retrieved_docs = []
+            tool_calls_info = []
+            
+            if isinstance(response, dict):
+                output_messages = response.get("messages", [])
+                if output_messages:
+                    # 遍历所有消息，提取工具调用信息
+                    for msg in output_messages:
+                        # 检查是否是工具调用消息
+                        if hasattr(msg, "tool_calls") and msg.tool_calls:
+                            for tc in msg.tool_calls:
+                                tool_call_info = {
+                                    "name": tc.get("name", ""),
+                                    "args": tc.get("args", {}),
+                                    "id": tc.get("id", "")
+                                }
+                                tool_calls_info.append(tool_call_info)
+                                logger.info(f"[DeepSeekAgent] 🛠️ 工具调用：{tool_call_info['name']}")
+                                logger.info(f"[DeepSeekAgent]    参数：{tool_call_info['args']}")
+                        
+                        # 获取最后一条 AI 消息
+                        if hasattr(msg, "content"):
+                            # 检查是否是 AIMessage（不是 ToolMessage）
+                            from langchain_core.messages import AIMessage
+                            if isinstance(msg, AIMessage):
+                                final_answer = msg.content
+                    
+                    # 如果没有找到 AIMessage，尝试获取最后一条非工具消息
+                    if not final_answer and output_messages:
+                        last_message = output_messages[-1]
+                        if hasattr(last_message, "content"):
+                            final_answer = last_message.content
+                        elif isinstance(last_message, str):
+                            final_answer = last_message
+                    
+                    logger.info(f"[DeepSeekAgent] 输出：{final_answer[:200]}...")
+                    logger.info(f"[DeepSeekAgent] 工具调用次数：{len(tool_calls_info)}")
+            
+            # 如果没有回答，返回错误
+            if not final_answer:
+                logger.warning("[DeepSeekAgent] Agent 返回空回答")
+                final_answer = "抱歉，我暂时无法回答您的问题。请尝试换一种问法或提供更详细的信息。"
+            
+            # 从工具调用信息中提取检索结果
+            for tool_call in tool_calls_info:
+                tool_name = tool_call.get("name", "")
+                tool_args = tool_call.get("args", {})
+                
+                # 如果是检索工具调用，记录相关信息
+                if tool_name == "smart_retrieval":
+                    logger.info(f"[DeepSeekAgent] 检测到检索工具调用：{tool_name}")
+            
+            # 从全局变量中获取最后一次检索结果
+            try:
+                from langchain_retrieval_tools import get_last_retrieval_result
+                retrieved_docs_raw = get_last_retrieval_result()
+                
+                # 转换为前端期望的格式
+                for doc in retrieved_docs_raw:
+                    retrieved_docs.append({
+                        "rank": doc.get('rank', 0),
+                        "document": doc.get('document', ''),
+                        "metadata": doc.get('metadata', {}),
+                        "score": doc.get('score', 0)
+                    })
+                
+                logger.info(f"[DeepSeekAgent] 从全局缓存中获取到 {len(retrieved_docs)} 篇文档")
+            except Exception as e:
+                logger.warning(f"[DeepSeekAgent] 获取全局检索结果失败：{e}")
+            
+            logger.info(f"[DeepSeekAgent] 检索到 {len(retrieved_docs)} 篇文档")
 
-检索结果：
-{tool_result}
-
-【对话历史】
-{history_text if history_text else "无历史记录"}
-
-请基于以上检索结果和对话历史回答用户的问题。如果当前检索结果不足以回答，可以结合历史对话中的相关信息进行补充。
-
-要求：
-- 如果历史记录中有相关信息，优先使用并注明"根据之前的对话"
-- 采用结构化格式回答
-- 在回答末尾注明主要参考来源
-
-请直接给出结构清晰的答案。"""
-
-                try:
-                    # 使用DeepSeek模型分析并回答问题
-                    logger.info(f"[DeepSeekAgent] 准备调用LLM...")
-                    analysis_response = self.llm.invoke(analysis_prompt)
-                    logger.info(f"[DeepSeekAgent] LLM调用完成")
-                    final_answer = analysis_response.content if hasattr(analysis_response, 'content') else str(analysis_response)
-                    answer_source = "retrieval"
-
-                    logger.info(f"[DeepSeekAgent] LLM调用成功，final_answer长度={len(final_answer)}")
-                except Exception as e:
-                    logger.warning(f"DeepSeek模型分析失败，返回原始检索结果: {e}")
-                    final_answer = tool_result
-                    answer_source = "raw_results"
-
-            # 如果 final_answer 仍然为空，返回提示信息
-            if final_answer is None:
-                logger.warning(f"[DeepSeekAgent] final_answer为空，返回提示信息")
-                final_answer = """当前对话信息不足以回答您的问题。请结合知识库中的文件名或章节标题进行更精确的询问。
-
-例如：
-- 可以提到具体的文件名称（如"安徒生童话.pdf"）
-- 可以提到具体的章节标题（如"第二章：责任与生活的抉择"）
-- 可以描述您想了解的内容主题
-
-这样可以帮助我从知识库中准确检索到相关信息。"""
-                answer_source = "no_info"
-
-            # 最终返回结果
+            # 返回结果
             return {
                 "success": True,
                 "user_input": user_input,
                 "answer": final_answer,
-                "retrieved_docs": retrieved_docs,
                 "chat_history": chat_history or [],
-                "answer_source": answer_source
+                "retrieved_docs": retrieved_docs,  # 添加检索到的文档列表
+                "tool_calls": tool_calls_info,  # 添加工具调用信息
+                "intermediate_steps": []  # LangGraph 不直接提供 intermediate_steps
             }
 
         except Exception as e:
-            error_msg = f"DeepSeek检索代理执行失败: {str(e)}"
+            error_msg = f"DeepSeek 检索代理执行失败：{str(e)}"
             logger.error(error_msg)
             return {
                 "success": False,
@@ -298,7 +343,7 @@ class DeepSeekRetrievalAgent:
 
     def simple_query(self, query: str) -> str:
         """
-        简单查询接口
+        简单查询接口（直接使用智能检索工具）
 
         Args:
             query: 用户查询
@@ -307,28 +352,27 @@ class DeepSeekRetrievalAgent:
             检索结果的文本
         """
         try:
-            params = self._extract_params(query)
+            logger.info(f"[DeepSeekAgent.simple_query] 执行简单查询：{query}")
             
-            # 使用工具函数获取格式化结果
-            import json
-            query_request_json = json.dumps({"query": params["query"], "filter_pdf": params["filter_pdf"]}, ensure_ascii=False)
-            tool_result = self.smart_retrieval(query_request_json, top_k=60)
+            # 直接使用智能检索工具
+            result = self.smart_retrieval._run(query=query, top_k=5)
             
-            return tool_result
+            logger.info(f"[DeepSeekAgent.simple_query] 查询完成，结果长度：{len(result)}")
+            return result
         except Exception as e:
-            logger.error(f"简单查询失败: {e}")
+            logger.error(f"简单查询失败：{e}")
             return f"查询失败：{str(e)}"
 
 
 def create_deepseek_agent(vector_db_path: str, api_key: str = None, base_url: str = None,
                          embedding_model: str = "intfloat/multilingual-e5-large", tools_instance=None) -> DeepSeekRetrievalAgent:
     """
-    创建DeepSeek检索代理实例的工厂函数
+    创建 DeepSeek 检索代理实例的工厂函数
 
     Args:
         vector_db_path: 向量数据库路径
-        api_key: DeepSeek API密钥
-        base_url: DeepSeek API基础URL
+        api_key: DeepSeek API 密钥
+        base_url: DeepSeek API 基础 URL
         embedding_model: 嵌入模型名称
         tools_instance: 已初始化的 langchain tools 实例
 

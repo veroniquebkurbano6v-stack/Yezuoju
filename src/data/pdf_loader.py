@@ -40,11 +40,13 @@ class TextBlock:
 
 class Page:
     """页面类，包装一页的所有文本块"""
-    def __init__(self, page_number: int, text_blocks: List[TextBlock], language: str = "", chapters: List[Dict[str, Any]] = None):
+    def __init__(self, page_number: int, text_blocks: List[TextBlock], language: str = "", 
+                 page_width: float = 0.0, page_height: float = 0.0):
         self.page_number = page_number  # 页码
         self.text_blocks = text_blocks  # 文本块列表
         self.language = language  # 页面语言
-        self.chapters = chapters if chapters is not None else []  # 章节信息（用于日语PDF）
+        self.page_width = page_width  # 页面宽度
+        self.page_height = page_height  # 页面高度
     
     
     def to_dict(self) -> Dict[str, Any]:
@@ -54,57 +56,17 @@ class Page:
         return {
             "page_number": self.page_number,
             "text_blocks": [block.to_dict() for block in self.text_blocks],
-            "language": self.language,
-            "chapters": self.chapters  # 包含章节信息
+            "language": self.language
         }
     
     def get_full_text(self) -> str:
-        """获取页面的完整文本，智能合并文本块"""
-        # 如果有章节信息，优先使用章节内容
-        if self.chapters:
-            chapter_texts = []
-            for chapter in self.chapters:
-                if "content" in chapter:
-                    chapter_texts.append(chapter["content"])
-                elif "title" in chapter:
-                    chapter_texts.append(chapter["title"])
-            if chapter_texts:
-                return "\n".join(chapter_texts)
-        
+        """获取页面的完整文本，直接拼接所有文本块"""
         if not self.text_blocks:
             return ""
         
-        # 按垂直位置排序文本块
-        sorted_blocks = sorted(self.text_blocks, key=lambda b: b.y0)
-        
-        # 合并文本块，增加智能段落识别
-        merged_lines = []
-        current_line = ""
-        
-        for block in sorted_blocks:
-            text = block.text.strip()
-            if not text:
-                continue
-            
-            # 如果当前行不为空，添加适当的空格或换行
-            if current_line:
-                # 检查是否需要换行（基于垂直间距）
-                vertical_space = block.y0 - (sorted_blocks[sorted_blocks.index(block)-1].y1 if sorted_blocks.index(block) > 0 else 0)
-                
-                if vertical_space > 10:  # 如果垂直间距较大，认为是新的段落
-                    merged_lines.append(current_line)
-                    current_line = text
-                else:
-                    # 如果是同一段落，添加空格连接
-                    current_line += " " + text
-            else:
-                current_line = text
-        
-        # 添加最后一行
-        if current_line:
-            merged_lines.append(current_line)
-        
-        return "\n".join(merged_lines)
+        # 简单版本：直接拼接所有文本块，保留原始顺序
+        texts = [block.text for block in self.text_blocks]
+        return "\n".join(texts)
     
     def __str__(self) -> str:
         """字符串表示"""
@@ -230,11 +192,16 @@ class PDFLoader:
             # 用单个换行符连接不同文本块
             page_text = "\n".join(block_texts)
             
+            # 获取页面尺寸
+            page_rect = page.rect
+            
             # 创建页面对象
             page_obj = Page(
                 page_number=page_num + 1,
                 text_blocks=text_blocks,
-                language="Japanese"
+                language="Japanese",
+                page_width=page_rect.width,
+                page_height=page_rect.height
             )
             pages.append(page_obj)
             
@@ -352,39 +319,8 @@ class PDFLoader:
                             )
                             custom_text_blocks.append(text_block)
                 
-                # 4. 进一步优化：基于段落合并行
-                if len(custom_text_blocks) > 1:
-                    # 按y坐标排序文本块
-                    sorted_blocks = sorted(custom_text_blocks, key=lambda b: b.y0)
-                    
-                    merged_blocks = [sorted_blocks[0]]
-                    
-                    for i in range(1, len(sorted_blocks)):
-                        current_block = sorted_blocks[i]
-                        last_block = merged_blocks[-1]
-                        
-                        # 计算垂直间距
-                        vertical_space = current_block.y0 - last_block.y1
-                        
-                        # 如果垂直间距较小且字体相同，合并为一个段落
-                        # 这里简化处理，只基于垂直间距判断
-                        if vertical_space < 5:  # 可调整的阈值
-                            # 合并文本和边界框
-                            merged_text = last_block.text + " " + current_block.text
-                            merged_blocks[-1] = TextBlock(
-                                text=merged_text,
-                                x0=min(last_block.x0, current_block.x0),
-                                y0=last_block.y0,
-                                x1=max(last_block.x1, current_block.x1),
-                                y1=current_block.y1,
-                                page_number=page_num + 1
-                            )
-                        else:
-                            merged_blocks.append(current_block)
-                    
-                    text_blocks = merged_blocks
-                else:
-                    text_blocks = custom_text_blocks
+                # 直接使用自定义提取的文本块，不进行段落合并
+                text_blocks = custom_text_blocks
                 
                 # print(f"第 {page_num + 1} 页，优化后文本块数量: {len(text_blocks)}")
                 
@@ -462,7 +398,13 @@ class PDFLoader:
                         print(f"PDFMiner 后备解析失败（页 {page_num + 1}）: {e}")
                 
                 # 创建页面对象并添加到列表
-                page_obj = Page(page_number=page_num + 1, text_blocks=text_blocks, language=language)
+                page_obj = Page(
+                    page_number=page_num + 1, 
+                    text_blocks=text_blocks, 
+                    language=language,
+                    page_width=page_width,
+                    page_height=page_height
+                )
                 pages.append(page_obj)
             
             # 关闭文档

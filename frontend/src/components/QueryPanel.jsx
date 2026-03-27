@@ -10,7 +10,7 @@ export default function QueryPanel({ selectedPdf, setSelectedPdf }) {
   useEffect(() => {
     async function fetchPdfs() {
       try {
-        const res = await fetch("/api/pdfs");
+        const res = await fetch("/api/chat/pdfs");
         const data = await res.json();
         setPdfs(data);
       } catch (err) {
@@ -31,7 +31,7 @@ export default function QueryPanel({ selectedPdf, setSelectedPdf }) {
         finalQuery = `${q} [仅在文件：${selectedPdf}]`;
       }
       
-      const res = await fetch("/api/query", {
+      const res = await fetch("/api/chat/query", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query: finalQuery })

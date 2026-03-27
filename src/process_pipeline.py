@@ -3,270 +3,409 @@
 统一处理流水线：pdf -> json -> vectors
 支持三种模式：json-only / vector-only / full
 
-功能特性：
+功能特色：
 - 智能缓存：自动跳过已处理的 PDF 文件
 - 强制重建：支持 --force 参数清空向量数据库
 - 详细日志：实时显示处理进度和统计信息
 - 错误处理：完善的异常捕获和友好的错误提示
-"""
-import argparse
-import logging
-import sys
-import time
-from pathlib import Path
-from typing import Optional
 
-logger = logging.getLogger(__name__)
+处理流程：
+1. new_identify_title.py - 识别 PDF 章节标题，生成标题 JSON
+2. concatenate_text_blocks.py - 拼接文本块，生成初始 chunks（含摘要）
+3. ingest_embeddings.py - 为 chunks 生成嵌入向量
+4. new_embedding_vector.py - 将 chunks 导入向量数据库
+"""
+
+import os
+import sys
+import json
+import logging
+import argparse
+from pathlib import Path
+from typing import List, Dict, Any, Optional
+from dotenv import load_dotenv
+import subprocess
+from datetime import datetime
+
+# 加载环境变量
+load_dotenv()
+
+# 配置日志
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    format='%(asctime)s - %(levelname)s - %(message)s'
 )
+logger = logging.getLogger(__name__)
 
-# 添加项目根目录到 sys.path，解决模块导入问题
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
+# === 路径配置 ===
+PROJECT_ROOT = Path(__file__).parent.parent
+SRC_DIR = PROJECT_ROOT / "src"
+DATA_DIR = SRC_DIR / "data"
+SOURCE_DIR = DATA_DIR / "source"  # PDF 源文件
+TITLES_DIR = DATA_DIR / "pages_title"  # 标题 JSON 输出
+CHUNKS_DIR = DATA_DIR / "chunks"  # 文本块 JSON
+VECTOR_DB_DIR = DATA_DIR / "vector_database"  # 向量数据库
 
-def reset_chroma_database(db_path: str):
-    """
-    重置 ChromaDB 数据库（清空所有数据）
+# === 脚本路径 ===
+SCRIPTS = {
+    "identify_title": SRC_DIR / "new_identify_title.py",
+    "concatenate": SRC_DIR / "concatenate_text_blocks.py",
+    "embeddings": SRC_DIR / "ingest_embeddings.py",
+    "vector_db": SRC_DIR / "new_embedding_vector.py"
+}
+
+
+class ProcessingPipeline:
+    """PDF 处理流水线"""
     
-    Args:
-        db_path: 数据库路径
-    """
-    try:
-        import chromadb
-        from chromadb.config import Settings
+    def __init__(self, mode: str = "full", force: bool = False, book_name: Optional[str] = None):
+        """
+        初始化流水线
         
-        logger.info(f"正在重置 ChromaDB 数据库：{db_path}")
-        client = chromadb.PersistentClient(
-            path=db_path,
-            settings=Settings(allow_reset=True, anonymized_telemetry=False)
-        )
-        client.reset()  # 重置整个数据库
-        logger.info("✅ ChromaDB 数据库已重置")
-    except Exception as e:
-        logger.error(f"❌ 重置数据库失败：{e}")
-        raise
+        Args:
+            mode: 处理模式 ("full", "json-only", "vector-only")
+            force: 是否强制覆盖已有数据
+            book_name: 指定处理的书籍名称（None 表示处理所有）
+        """
+        self.mode = mode
+        self.force = force
+        self.book_name = book_name
+        
+        # 验证脚本存在
+        self._validate_scripts()
+        
+        logger.info(f"🚀 PDF 处理流水线初始化完成")
+        logger.info(f"   模式：{mode}")
+        logger.info(f"   强制模式：{force}")
+        if book_name:
+            logger.info(f"   指定书籍：《{book_name}》")
+    
+    def _validate_scripts(self):
+        """验证所有必需的脚本是否存在"""
+        missing_scripts = []
+        for name, script_path in SCRIPTS.items():
+            if not script_path.exists():
+                missing_scripts.append(f"{name}: {script_path}")
+        
+        if missing_scripts:
+            raise FileNotFoundError(
+                f"缺少必需的脚本：\n" +
+                "\n".join([f"  - {s}" for s in missing_scripts]) +
+                "\n请确保所有脚本都在 src/ 目录下"
+            )
+    
+    def run_step(self, step_name: str, script_path: Path, extra_args: List[str] = None) -> bool:
+        """
+        运行单个处理步骤
+        
+        Args:
+            step_name: 步骤名称
+            script_path: 脚本路径
+            extra_args: 额外的命令行参数
+            
+        Returns:
+            bool: 是否成功
+        """
+        logger.info(f"\n{'='*60}")
+        logger.info(f"⚙️  开始执行：{step_name}")
+        logger.info(f"{'='*60}")
+        
+        # 构建命令
+        cmd = [sys.executable, str(script_path)]
+        
+        if extra_args:
+            cmd.extend(extra_args)
+        
+        logger.info(f"📋 执行命令：{' '.join(cmd)}")
+        
+        try:
+            # 运行脚本
+            result = subprocess.run(
+                cmd,
+                check=True,
+                capture_output=False,
+                text=True
+            )
+            
+            logger.info(f"✅ {step_name} 执行成功")
+            return True
+            
+        except subprocess.CalledProcessError as e:
+            logger.error(f"❌ {step_name} 执行失败：{e}")
+            return False
+        except Exception as e:
+            logger.error(f"❌ {step_name} 发生异常：{e}")
+            return False
+    
+    def run_full_pipeline(self) -> bool:
+        """
+        运行完整流水线
+        
+        Returns:
+            bool: 是否成功
+        """
+        logger.info("\n" + "="*60)
+        logger.info("🎯 开始完整处理流程")
+        logger.info("="*60)
+        start_time = datetime.now()
+        
+        # 步骤 1: 识别标题
+        if not self.run_step(
+            "步骤 1/4: 识别 PDF 章节标题",
+            SCRIPTS["identify_title"],
+            ["--book", self.book_name] if self.book_name else []
+        ):
+            return False
+        
+        # 步骤 2: 拼接文本块
+        if not self.run_step(
+            "步骤 2/4: 拼接文本块并生成摘要",
+            SCRIPTS["concatenate"],
+            ["--book", self.book_name] if self.book_name else []
+        ):
+            return False
+        
+        # 步骤 3: 生成嵌入向量
+        if not self.run_step(
+            "步骤 3/4: 生成嵌入向量",
+            SCRIPTS["embeddings"],
+            ["--book", self.book_name] if self.book_name else []
+        ):
+            return False
+        
+        # 步骤 4: 导入向量数据库
+        if not self.run_step(
+            "步骤 4/4: 导入向量数据库",
+            SCRIPTS["vector_db"],
+            [
+                "--input-dir", str(CHUNKS_DIR),
+                "--db-path", str(VECTOR_DB_DIR),
+                "--book", self.book_name
+            ] if self.book_name else [
+                "--input-dir", str(CHUNKS_DIR),
+                "--db-path", str(VECTOR_DB_DIR)
+            ]
+        ):
+            return False
+        
+        end_time = datetime.now()
+        duration = end_time - start_time
+        
+        logger.info("\n" + "="*60)
+        logger.info(f"🎉 完整处理流程执行成功！")
+        logger.info(f"⏱️  总耗时：{duration}")
+        logger.info(f"="*60)
+        
+        return True
+    
+    def run_json_only(self) -> bool:
+        """
+        仅运行 JSON 生成流程（前两步）
+        
+        Returns:
+            bool: 是否成功
+        """
+        logger.info("\n" + "="*60)
+        logger.info("📝 开始 JSON 生成流程")
+        logger.info("="*60)
+        start_time = datetime.now()
+        
+        # 步骤 1: 识别标题
+        if not self.run_step(
+            "步骤 1/2: 识别 PDF 章节标题",
+            SCRIPTS["identify_title"],
+            ["--book", self.book_name] if self.book_name else []
+        ):
+            return False
+        
+        # 步骤 2: 拼接文本块
+        if not self.run_step(
+            "步骤 2/2: 拼接文本块并生成摘要",
+            SCRIPTS["concatenate"],
+            ["--book", self.book_name] if self.book_name else []
+        ):
+            return False
+        
+        end_time = datetime.now()
+        duration = end_time - start_time
+        
+        logger.info("\n" + "="*60)
+        logger.info(f"🎉 JSON 生成流程执行成功！")
+        logger.info(f"⏱️  总耗时：{duration}")
+        logger.info(f"📂 输出目录：{CHUNKS_DIR}")
+        logger.info(f"="*60)
+        
+        return True
+    
+    def run_vector_only(self) -> bool:
+        """
+        仅运行向量化流程（后两步）
+        
+        Returns:
+            bool: 是否成功
+        """
+        logger.info("\n" + "="*60)
+        logger.info("🔢 开始向量化流程")
+        logger.info("="*60)
+        start_time = datetime.now()
+        
+        # 步骤 1: 生成嵌入向量
+        if not self.run_step(
+            "步骤 1/2: 生成嵌入向量",
+            SCRIPTS["embeddings"],
+            [
+                "--book", self.book_name,
+                "--force" if self.force else []
+            ] if self.book_name else [
+                "--force" if self.force else []
+            ]
+        ):
+            return False
+        
+        # 步骤 2: 导入向量数据库
+        if not self.run_step(
+            "步骤 2/2: 导入向量数据库",
+            SCRIPTS["vector_db"],
+            [
+                "--input-dir", str(CHUNKS_DIR),
+                "--db-path", str(VECTOR_DB_DIR),
+                "--book", self.book_name,
+                "--force" if self.force else [],
+                "--clear-db" if self.force else []
+            ] if self.book_name else [
+                "--input-dir", str(CHUNKS_DIR),
+                "--db-path", str(VECTOR_DB_DIR),
+                "--force" if self.force else [],
+                "--clear-db" if self.force else []
+            ]
+        ):
+            return False
+        
+        end_time = datetime.now()
+        duration = end_time - start_time
+        
+        logger.info("\n" + "="*60)
+        logger.info(f"🎉 向量化流程执行成功！")
+        logger.info(f"⏱️  总耗时：{duration}")
+        logger.info(f"💾 向量数据库：{VECTOR_DB_DIR}")
+        logger.info(f"="*60)
+        
+        return True
+    
+    def run(self) -> bool:
+        """
+        根据模式运行对应的流程
+        
+        Returns:
+            bool: 是否成功
+        """
+        if self.mode == "full":
+            return self.run_full_pipeline()
+        elif self.mode == "json-only":
+            return self.run_json_only()
+        elif self.mode == "vector-only":
+            return self.run_vector_only()
+        else:
+            logger.error(f"未知模式：{self.mode}")
+            return False
 
-def count_json_files(json_dir: str) -> int:
-    """统计 JSON 文件数量"""
-    return len(list(Path(json_dir).glob("**/*.json")))
-
-def count_pdf_files(source_dir: str) -> int:
-    """统计 PDF 文件数量"""
-    return len(list(Path(source_dir).rglob("*.pdf")))
 
 def main():
+    """主函数"""
     parser = argparse.ArgumentParser(
-        description="PDF 处理流水线",
+        description="PDF 处理流水线 - 一键完成从 PDF 到向量数据库的全流程",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-使用示例:
-  # 仅生成 JSON（跳过已缓存的文件）
-  python process_pipeline.py --mode json-only
+示例用法:
+  # 完整处理所有 PDF
+  python src/process_pipeline.py
   
-  # 仅向量化（从 JSON 生成向量索引）
-  python process_pipeline.py --mode vector-only
+  # 仅生成 JSON（标题识别 + 文本拼接）
+  python src/process_pipeline.py --mode json-only
   
-  # 完整流程（JSON + 向量）
-  python process_pipeline.py --mode full
+  # 仅向量化（嵌入向量 + 数据库导入）
+  python src/process_pipeline.py --mode vector-only
   
-  # 强制重建（先清空向量数据库）
-  python process_pipeline.py --mode full --force
+  # 处理单本书籍
+  python src/process_pipeline.py --book "洪武：朱元璋的成与败"
   
-  # 指定自定义路径
-  python process_pipeline.py --mode full --source-dir ./my_pdfs --db-path ./my_db
-        """
+  # 强制覆盖所有已有数据
+  python src/process_pipeline.py --force
+  
+  # 组合使用
+  python src/process_pipeline.py --mode json-only --book "安徒生童话"
+"""
     )
     
-    # 使用相对于项目根目录的绝对路径
-    project_root = Path(__file__).parent.parent
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="full",
+        choices=["full", "json-only", "vector-only"],
+        help="处理模式（默认：full）"
+    )
     
     parser.add_argument(
-        "--mode", 
-        choices=["json-only", "vector-only", "full"], 
-        default="json-only",
-        help="处理模式：json-only（仅生成 JSON）/ vector-only（仅向量化）/ full（完整流程）"
+        "--book",
+        type=str,
+        help="指定要处理的书籍名称（不含.pdf 扩展名）"
     )
+    
     parser.add_argument(
-        "--source-dir", 
-        default=str(project_root / "src" / "data" / "source"), 
-        help=f"PDF 源目录（默认：{project_root / 'src' / 'data' / 'source'}）"
+        "--force",
+        action="store_true",
+        help="强制覆盖已有数据（危险操作）"
     )
+    
     parser.add_argument(
-        "--json-dir", 
-        default=str(project_root / "src" / "data" / "pages_title"), 
-        help=f"JSON 输出/输入目录（默认：{project_root / 'src' / 'data' / 'pages_title'}）"
-    )
-    parser.add_argument(
-        "--db-path", 
-        default="src/data/vector_database", 
-        help="ChromaDB 存储路径（默认：src/data/vector_database）"
-    )
-    parser.add_argument(
-        "--batch-size", 
-        type=int, 
-        default=64, 
-        help="向量化时的批处理大小（默认：64）"
-    )
-    parser.add_argument(
-        "--embedding-model", 
-        default="intfloat/multilingual-e5-large", 
-        help="嵌入模型名称（默认：intfloat/multilingual-e5-large）"
-    )
-    parser.add_argument(
-        "--force", 
-        action="store_true", 
-        help="强制重建：先清空向量数据库（慎用！会删除所有已有数据）"
-    )
-    parser.add_argument(
-        "--dry-run", 
-        action="store_true", 
-        help="预演模式：只显示将要执行的操作，不实际处理"
+        "--dry-run",
+        action="store_true",
+        help="仅显示计划，不实际执行"
     )
     
     args = parser.parse_args()
-    mode = args.mode
     
-    # 打印配置信息
-    logger.info("=" * 80)
-    logger.info("📋 PDF 处理流水线配置")
-    logger.info("=" * 80)
-    logger.info(f"运行模式：{mode}")
-    logger.info(f"PDF 源目录：{args.source_dir}")
-    logger.info(f"JSON 目录：{args.json_dir}")
-    logger.info(f"向量数据库路径：{args.db_path}")
-    logger.info(f"批次大小：{args.batch_size}")
-    logger.info(f"嵌入模型：{args.embedding_model}")
-    logger.info(f"强制重建：{'是' if args.force else '否'}")
-    logger.info(f"预演模式：{'是' if args.dry_run else '否'}")
-    logger.info("=" * 80)
+    # 打印欢迎信息
+    print("="*60)
+    print("🚀 PDF 处理流水线")
+    print("="*60)
+    print(f"📂 项目根目录：{PROJECT_ROOT}")
+    print(f"📁 PDF 源目录：{SOURCE_DIR}")
+    print(f"📄 标题输出：{TITLES_DIR}")
+    print(f"📊 文本块：{CHUNKS_DIR}")
+    print(f"💾 向量数据库：{VECTOR_DB_DIR}")
+    print("="*60)
     
-    # 预演模式：只显示配置
+    # 显示处理计划
+    print(f"\n📋 处理计划:")
+    print(f"   模式：{args.mode}")
+    print(f"   强制模式：{args.force}")
+    if args.book:
+        print(f"   指定书籍：《{args.book}》")
+    
     if args.dry_run:
-        logger.info("✅ 预演模式：配置检查完成，未执行任何实际操作")
+        print("\n⚠️  [干跑模式] 不执行任何操作")
         return
     
-    total_start_time = time.time()
-    stats = {
-        "json_files_before": 0,
-        "json_files_after": 0,
-        "pdf_count": 0,
-        "success": True,
-        "errors": []
-    }
+    # 创建并运行流水线
+    pipeline = ProcessingPipeline(
+        mode=args.mode,
+        force=args.force,
+        book_name=args.book
+    )
     
-    try:
-        # 统计初始状态
-        stats["pdf_count"] = count_pdf_files(args.source_dir)
-        stats["json_files_before"] = count_json_files(args.json_dir)
-        
-        logger.info(f"📊 初始状态：{stats['pdf_count']} 个 PDF 文件，{stats['json_files_before']} 个 JSON 文件")
-        logger.info("")
-        
-        # ========== 第一阶段：生成 JSON ==========
-        if mode in ("json-only", "full"):
-            logger.info("🚀 第一阶段：生成 JSON 文件")
-            logger.info("-" * 80)
-            stage_start = time.time()
-            
-            try:
-                import identify_title
-                identify_title.main()
-                stage_elapsed = time.time() - stage_start
-                logger.info(f"✅ JSON 生成完成（耗时：{stage_elapsed:.2f}秒）")
-            except Exception as e:
-                error_msg = f"生成 JSON 失败：{e}"
-                logger.error(f"❌ {error_msg}")
-                stats["errors"].append(error_msg)
-                stats["success"] = False
-                if mode == "json-only":
-                    raise  # json-only 模式下直接抛出异常
-            
-            logger.info("")
-            stats["json_files_after"] = count_json_files(args.json_dir)
-            new_json_count = stats["json_files_after"] - stats["json_files_before"]
-            logger.info(f"📈 JSON 文件变化：{stats['json_files_before']} → {stats['json_files_after']} (+{new_json_count})")
-            logger.info("")
-        
-        # ========== 第二阶段：向量化 ==========
-        if mode in ("vector-only", "full"):
-            logger.info("🚀 第二阶段：向量化处理")
-            logger.info("-" * 80)
-            stage_start = time.time()
-            
-            # 强制重建：清空向量数据库
-            if args.force:
-                logger.warning("⚠️  检测到 --force 参数，将清空向量数据库...")
-                reset_chroma_database(args.db_path)
-                logger.info("")
-            
-            # 检查 JSON 文件是否存在
-            json_count = count_json_files(args.json_dir)
-            if json_count == 0:
-                error_msg = f"在 {args.json_dir} 中未找到 JSON 文件，请先运行 json-only 模式"
-                logger.error(f"❌ {error_msg}")
-                stats["errors"].append(error_msg)
-                stats["success"] = False
-                raise ValueError(error_msg)
-            
-            logger.info(f"发现 {json_count} 个 JSON 文件")
-            logger.info(f"开始将 JSON 导入到 ChromaDB：{args.json_dir} -> {args.db_path}")
-            logger.info(f"使用嵌入模型：{args.embedding_model}")
-            logger.info(f"批次大小：{args.batch_size}")
-            logger.info("")
-            
-            try:
-                from embedding_vector import ingest_json_directory_to_chroma
-                ingest_json_directory_to_chroma(
-                    args.json_dir, 
-                    db_path=args.db_path, 
-                    batch_size=args.batch_size, 
-                    model_name=args.embedding_model
-                )
-                stage_elapsed = time.time() - stage_start
-                logger.info(f"✅ JSON 导入完成（耗时：{stage_elapsed:.2f}秒）")
-            except Exception as e:
-                error_msg = f"导入 JSON 到 ChromaDB 失败：{e}"
-                logger.error(f"❌ {error_msg}")
-                stats["errors"].append(error_msg)
-                stats["success"] = False
-                raise  # 重新抛出异常以便在完整模式下继续执行
-            
-            logger.info("")
-        
-        # ========== 汇总统计 ==========
-        total_elapsed = time.time() - total_start_time
-        logger.info("=" * 80)
-        logger.info("📊 处理完成汇总")
-        logger.info("=" * 80)
-        logger.info(f"总耗时：{total_elapsed:.2f}秒")
-        logger.info(f"PDF 文件数：{stats['pdf_count']}")
-        logger.info(f"JSON 文件数：{stats['json_files_before']} → {stats['json_files_after']}")
-        
-        if stats["success"]:
-            logger.info("✅ 全部处理成功！")
-        else:
-            logger.warning("⚠️  部分操作失败:")
-            for error in stats["errors"]:
-                logger.warning(f"   - {error}")
-        
-        logger.info("=" * 80)
-        
-        # 如果有错误且不是完整模式，退出码设为 1
-        if not stats["success"] and mode != "full":
-            sys.exit(1)
-            
-    except KeyboardInterrupt:
-        logger.error("\n❌ 用户中断操作")
-        sys.exit(1)
-    except Exception as e:
-        total_elapsed = time.time() - total_start_time
-        logger.error(f"\n❌ 处理失败（总耗时：{total_elapsed:.2f}秒）：{e}")
-        sys.exit(1)
+    success = pipeline.run()
+    
+    # 最终总结
+    print("\n" + "="*60)
+    if success:
+        print("✅ 处理成功！")
+    else:
+        print("❌ 处理失败，请检查错误日志")
+    print("="*60)
+    
+    return 0 if success else 1
+
 
 if __name__ == "__main__":
-    main()
-
-
+    sys.exit(main())

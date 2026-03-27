@@ -170,7 +170,7 @@ export default function App() {
         return nextIndex;
       });
     }, 3000);
-  }, []);
+  }, []); // 空依赖数组，确保函数引用稳定
 
   useEffect(() => {
     return () => {

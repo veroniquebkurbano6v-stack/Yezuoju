@@ -13,12 +13,19 @@ export default function ChatWindow({ dialogId, selectedPdf, setSelectedPdf, onCi
         return;
       }
       try {
-        const res = await fetch(`/api/dialogs/${dialogId}/history`);
+        // 使用 /api/chat/history?conversation_id=xxx
+        const res = await fetch(`/api/chat/history?conversation_id=${encodeURIComponent(dialogId)}`);
+        if (res.status === 404) {
+          // 对话不存在或没有历史记录，这是正常的（新创建的对话）
+          console.log('新对话，暂无历史记录');
+          setHistory([]);
+          return;
+        }
         if (!res.ok) {
           throw new Error("对话不存在");
         }
         const data = await res.json();
-        const messages = data.history || data.messages || [];
+        const messages = data.messages || [];
         if (Array.isArray(messages)) {
           setHistory(messages.map(m => ({
             role: m.role,
@@ -36,7 +43,7 @@ export default function ChatWindow({ dialogId, selectedPdf, setSelectedPdf, onCi
   useEffect(() => {
     async function fetchPdfs() {
       try {
-        const res = await fetch("/api/pdfs");
+        const res = await fetch("/api/chat/pdfs");
         const data = await res.json();
         setPdfs(data);
       } catch (err) {
@@ -66,10 +73,13 @@ export default function ChatWindow({ dialogId, selectedPdf, setSelectedPdf, onCi
         finalQuestion = `${input} [仅在文件：${selectedPdf}]`;
       }
       
-      const res = await fetch(`/api/dialogs/${dialogId}/chat`, {
+      const res = await fetch(`/api/chat/query`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: finalQuestion })
+        body: JSON.stringify({ 
+          query: finalQuestion,
+          conversation_id: dialogId
+        })
       });
       const data = await res.json();
       if (data.success) {

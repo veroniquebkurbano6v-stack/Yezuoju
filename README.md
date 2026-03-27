@@ -1,334 +1,689 @@
-# StoryRag v2.0 — PDF 智能检索系统
+# 📚 PDF 处理流水线 - RAG 向量数据库构建工具
 
-基于检索增强生成（RAG）技术的智能问答系统，包含完整的前后端架构：
-- **数据处理层** (`src/`): PDF解析、向量化、索引构建
-- **后端服务层** (`backend/`): FastAPI + ChromaDB + DeepSeek LLM
-- **前端界面层** (`frontend/`): React + Vite + Tailwind CSS
+一键将 PDF 书籍转换为可语义检索的向量数据库，支持完整流程、仅 JSON 生成、仅向量化三种模式。
 
-=====================================
+---
 
-## 快速开始
+## ⚡ 快速开始
 
-### 1. 环境准备
-
-#### 1.1 复制环境配置
-复制环境示例为 `.env` 并填写秘密/覆盖项：
-- 复制：`cp env.example .env`（在 Windows 上手动复制 `env.example` 到 `.env` 并编辑）
-
-#### 1.2 创建并激活虚拟环境
-
+### 环境准备
 ```bash
-python -m venv .venv
-source .venv/bin/activate       # macOS / Linux
-.venv\Scripts\activate        # Windows (PowerShell)
+# 1. 安装依赖
 pip install -r requirements.txt
+
+# 2. 配置环境变量（复制并修改）
+cp .env.example .env
+
+# 3. 启动 Ollama 服务
+ollama serve
 ```
 
-### 2. 数据准备
+### 一键处理（最常用）
+```bash
+# 处理所有 PDF 书籍
+python src/process_pipeline.py
 
-选择以下任一方式准备数据：
+# 处理单本书籍
+python src/process_pipeline.py --book "洪武：朱元璋的成与败"
 
-#### 2.1 完整流程（推荐）
-生成 JSON（identify_title）并导入到 Chroma：
+# 强制覆盖已有数据
+python src/process_pipeline.py --force
+```
+
+### 🔍 调试工具（新增）
+```bash
+# 进入交互式调试模式
+python src/debug_deepseek_agent.py
+
+# 单次查询测试
+python src/debug_deepseek_agent.py -q "洪武皇帝是谁？"
+
+# 开启详细日志
+python src/debug_deepseek_agent.py -v
+```
+
+---
+
+## 📋 目录
+
+- [功能特性](#-功能特性)
+- [快速开始](#-快速开始)
+- [处理流程](#-处理流程)
+- [使用场景](#-使用场景)
+- [RAG 系统评测](#-rag-系统评测新增)
+- [命令参数](#-命令参数)
+- [调试工具](#-调试工具)
+- [输出数据格式](#-输出数据格式)
+- [项目结构](#-项目结构)
+- [技术架构](#-技术架构)
+- [故障排查](#-故障排查)
+- [测试验证](#-测试验证)
+
+---
+
+## ✨ 功能特性
+
+- ✅ **一键完成** - 从 PDF 到向量数据库全自动处理
+- ✅ **灵活配置** - 三种模式满足不同需求
+- ✅ **智能缓存** - 自动跳过已处理文件，节省时间
+- ✅ **详细日志** - 实时监控处理进度
+- ✅ **批量处理** - 支持多本书籍同时处理
+- ✅ **断点续传** - 中断后可继续处理
+
+---
+
+## 🔄 处理流程
+
+```
+PDF 文件
+  ↓
+步骤 1: 识别章节标题 → titles.json
+  ↓
+步骤 2: 拼接文本块 + 生成摘要 → chunks.json
+  ↓
+步骤 3: 生成嵌入向量 → 填充 embedding 字段
+  ↓
+步骤 4: 导入向量数据库 → ChromaDB 存储
+```
+
+### 处理步骤详解
+
+| 步骤 | 脚本 | 输入 | 输出 | 说明 |
+|------|------|------|------|------|
+| **1** | `new_identify_title.py` | PDF | `titles.json` | 识别 PDF 章节标题 |
+| **2** | `concatenate_text_blocks.py` | `titles.json` | `chunks.json` | 拼接文本块 + 生成摘要 |
+| **3** | `ingest_embeddings.py` | `chunks.json` | `chunks.json` | 生成嵌入向量 |
+| **4** | `new_embedding_vector.py` | `chunks.json` | `vector_database/` | 导入 ChromaDB |
+
+---
+
+## 🎯 使用场景
+
+### 场景 1：首次完整处理
+```bash
+# 处理所有 PDF
+python src/process_pipeline.py
+
+# 或处理指定书籍
+python src/process_pipeline.py --book "安徒生童话"
+```
+
+### 场景 2：仅生成文本块和摘要
+```bash
+# 适用于只需要 JSON 数据的场景
+python src/process_pipeline.py --mode json-only
+```
+
+### 场景 3：已有 JSON，仅生成向量
+```bash
+# 适用于只更新向量数据库的场景
+python src/process_pipeline.py --mode vector-only
+```
+
+### 场景 4：强制重建所有数据
+```bash
+# 清空所有已有数据，重新处理
+python src/process_pipeline.py --force
+```
+
+### 场景 5：预览将要执行的操作
+```bash
+# 先看看会做什么，不实际执行
+python src/process_pipeline.py --dry-run
+```
+
+---
+
+## 🧪 RAG 系统评测（新增）
+
+### DeepSeek 专业评测
+
+使用 DeepSeek 模型对 RAG 系统进行多维度专业评测。
+
+#### 快速开始
+```bash
+# 评测单个问题
+python eval_with_deepseek.py --question "朱元璋出生时的家庭状况如何？"
+
+# 批量评测所有数据
+python batch_eval_with_deepseek.py
+
+# 实时监控评测进度
+python monitor_batch_eval.py
+```
+
+#### 评测维度
+- **准确性** (Accuracy) - 答案的事实准确性和正确性
+- **完整性** (Completeness) - 答案的完整程度和信息覆盖
+- **相关性** (Relevance) - 答案与问题的相关程度
+- **引用质量** (Citation Quality) - 引用材料的支撑作用
+- **综合评分** (Overall) - 综合评价
+
+#### 输出结果
+```json
+{
+  "question_id": "F001",
+  "deepseek_evaluation": {
+    "scores": {
+      "accuracy": 4.5,
+      "completeness": 4.0,
+      "relevance": 5.0,
+      "citation_quality": 4.5,
+      "overall": 4.5
+    },
+    "evaluation_summary": "答案准确描述了朱元璋的贫困家庭背景..."
+  }
+}
+```
+
+#### 评测数据集
+- 包含 46 道测试题目
+- 涵盖事实问答、推理分析、模糊查询、多语言等多种类型
+- 详见 `test_questions.json`
+
+#### 查看评测报告
+```bash
+# 查看最终评测报告
+cat output/deepseek_batch_eval_report.json
+
+# 查看原始测试结果
+cat output/test_results.json
+```
+
+---
+
+## 🔧 命令参数
+
+### 基本用法
+```bash
+python src/process_pipeline.py [选项]
+```
+
+### 参数说明
+
+| 参数 | 简写 | 说明 | 默认值 |
+|------|------|------|--------|
+| `--mode` | `-m` | 处理模式 (full/json-only/vector-only) | full |
+| `--book` | `-b` | 指定书籍名称（处理单个） | 全部 |
+| `--force` | `-f` | 强制覆盖已有数据 | False |
+| `--dry-run` | `-n` | 预览模式，不实际执行 | False |
+| `--help` | `-h` | 显示帮助信息 | - |
+
+### 示例命令
 
 ```bash
-python src/process_pipeline.py --mode full
+# 1. 完整处理所有书籍
+python src/process_pipeline.py
+
+# 2. 处理单本书籍
+python src/process_pipeline.py --book "鲁迅短篇小说集：呐喊"
+
+# 3. 仅生成 JSON 数据
+python src/process_pipeline.py --mode json-only
+
+# 4. 仅向量化处理
+python src/process_pipeline.py --mode vector-only
+
+# 5. 强制覆盖
+python src/process_pipeline.py --force
+
+# 6. 干跑预览
+python src/process_pipeline.py --dry-run
+
+# 7. 组合使用
+python src/process_pipeline.py --book "洪武：朱元璋的成与败" --force
 ```
 
-#### 2.2 导入现有 JSON
-如果已生成 JSON 文件，可直接导入到 Chroma：
+---
+
+## 🛠️ 调试工具
+
+### deep_seek_agent.py 功能
+
+提供交互式命令行界面，用于测试和调试智能检索系统。
+
+#### 主要特性
+- ✅ **实时交互** - 支持多轮对话，自动保存历史
+- ✅ **工具调用** - 直接调用 SmartRetrievalTool 进行检索
+- ✅ **详细日志** - 可开启 DEBUG 模式查看详细过程
+- ✅ **灵活配置** - 支持指定向量数据库路径
+- ✅ **结果导出** - 可导出对话历史到 JSON 文件
+
+#### 可用命令
+
+| 命令 | 说明 |
+|------|------|
+| `help`, `h` | 显示帮助信息 |
+| `quit`, `exit`, `q` | 退出程序 |
+| `clear` | 清屏 |
+| `history` | 显示对话历史 |
+| `reset` | 重置对话历史 |
+| `export [文件名]` | 导出对话历史到 JSON 文件 |
+| `status` | 显示当前状态 |
+| `log <级别>` | 设置日志级别 (DEBUG/INFO/WARNING/ERROR) |
+| `tools` | 显示可用工具列表 |
+
+#### 使用示例
 
 ```bash
-python -m src.embedding_vector --ingest-json-dir src/data/pages_title --db-path src/data/vector_database
+# 1. 进入交互模式
+python src/debug_deepseek_agent.py
+
+# 2. 单次查询
+python src/debug_deepseek_agent.py -q "洪武皇帝是谁？"
+
+# 3. 指定向量数据库
+python src/debug_deepseek_agent.py --vector-db ./vector_database
+
+# 4. 开启详细日志
+python src/debug_deepseek_agent.py -v
+
+# 5. 禁用颜色输出
+python src/debug_deepseek_agent.py --no-colors
 ```
 
-### 3. 启动服务
+#### 交互模式示例
 
-#### 3.1 启动后端服务
+```
+╔══════════════════════════════════════════════════════════╗
+║                                                          ║
+║     🤖 DeepSeek Agent 命令行调试工具                       ║
+║                                                          ║
+╚══════════════════════════════════════════════════════════╝
 
+您：洪武皇帝是谁？
+
+🔍 调用 smart_retrieval 工具...
+
+📚 检索结果：
+{"query": "洪武皇帝是谁？", "results_count": 5, ...}
+
+您：exit
+👋 再见！
+```
+
+---
+
+## 📊 输出数据格式
+
+### titles.json 格式
+```json
+{
+  "安徒生童话.pdf": {
+    "pages": [1, 5, 10],
+    "titles": ["丑小鸭", "拇指姑娘", "海的女儿"]
+  }
+}
+```
+
+### chunks.json 格式
+```json
+[
+  {
+    "id": "书名_章节_起始页_结束页_块索引",
+    "embedding": [0.1, 0.2, ...],  // 1024 维向量
+    "document": "摘要内容",  // 用于检索
+    "metadata": {
+      "source": "书名.pdf",
+      "chapter": "章节名",
+      "start_page": 1,
+      "end_page": 10,
+      "full_text": "完整原文"
+    }
+  }
+]
+```
+
+### 向量数据库结构
+```
+vector_database/
+├── chroma-collections/
+│   └── document_collection/
+│       ├── id_to_uuid.json
+│       ├── index.sqlite
+│       └── metadata.json
+```
+
+---
+
+## 📁 项目结构
+
+```
+Yezuoju-main/
+├── src/                      # 源代码目录
+│   ├── process_pipeline.py   # 🎯 统一入口脚本
+│   ├── new_identify_title.py # 步骤 1: 标题识别
+│   ├── concatenate_text_blocks.py  # 步骤 2: 文本拼接
+│   ├── ingest_embeddings.py  # 步骤 3: 嵌入生成
+│   └── new_embedding_vector.py # 步骤 4: 向量导入
+├── src/data/
+│   ├── source/               # PDF 源文件
+│   ├── pages_title/          # 标题 JSON 输出
+│   └── chunks/               # 文本块 JSON 输出
+├── output/                   # 评测结果输出
+│   ├── test_results.json     # 原始测试结果
+│   └── deepseek_batch_eval_report.json  # DeepSeek 评测报告
+├── vector_database/          # 向量数据库
+├── eval_with_deepseek.py     # DeepSeek 评测工具
+├── batch_eval_with_deepseek.py  # 批量评测脚本
+├── monitor_batch_eval.py     # 评测进度监控
+├── test_questions.json       # 测试数据集（46 题）
+├── requirements.txt          # Python 依赖
+├── .env                      # 环境变量配置
+└── README.md                 # 本文档
+```
+
+---
+
+## 🏗️ 技术架构
+
+### 核心组件
+
+```mermaid
+graph TB
+    A[PDF 文件] --> B[new_identify_title.py]
+    B --> C[titles.json]
+    C --> D[concatenate_text_blocks.py]
+    D --> E[chunks.json 初始]
+    E --> F[ingest_embeddings.py]
+    F --> G[chunks.json 完整]
+    G --> H[new_embedding_vector.py]
+    H --> I[ChromaDB 向量数据库]
+```
+
+### 数据处理流程
+
+```mermaid
+graph LR
+    A[PDF 解析] --> B[特征提取]
+    B --> C[AI 标题识别]
+    C --> D[章节边界检测]
+    D --> E[文本块拼接]
+    E --> F[摘要生成]
+    F --> G[向量嵌入]
+    G --> H[数据库存储]
+```
+
+### 系统架构
+
+```mermaid
+graph TB
+    subgraph 用户层
+        A[命令行界面]
+    end
+    
+    subgraph 控制层
+        B[process_pipeline.py]
+    end
+    
+    subgraph 处理层
+        C[标题识别模块]
+        D[文本拼接模块]
+        E[向量生成模块]
+        F[数据库导入模块]
+    end
+    
+    subgraph 存储层
+        G[titles.json]
+        H[chunks.json]
+        I[ChromaDB]
+    end
+    
+    A --> B
+    B --> C
+    B --> D
+    B --> E
+    B --> F
+    C --> G
+    D --> H
+    E --> H
+    F --> I
+```
+
+### RAG 评测系统架构
+
+```mermaid
+graph TB
+    A[测试数据集<br/>test_questions.json] --> B[批量评测脚本<br/>batch_eval_with_deepseek.py]
+    C[RAG 系统<br/>检索结果] --> B
+    B --> D[DeepSeek API<br/>eval_with_deepseek.py]
+    D --> E[多维度评分<br/>准确性/完整性/相关性/引用质量]
+    E --> F[评测报告<br/>deepseek_batch_eval_report.json]
+    
+    G[监控脚本<br/>monitor_batch_eval.py] -.-> B
+    G -.-> 实时进度显示
+```
+
+### 评测流程
+
+```mermaid
+graph LR
+    A[加载测试问题] --> B[调用 RAG 检索]
+    B --> C[获取检索结果]
+    C --> D[DeepSeek 模型评测]
+    D --> E[生成评分报告]
+    E --> F[保存评测结果]
+```
+
+---
+
+## 🔍 故障排查
+
+### 问题 1：Ollama 连接失败
 ```bash
-# 在新终端窗口中
-python -m backend.app.main
+# 检查 Ollama 服务是否启动
+ollama serve
+
+# 检查模型是否已拉取
+ollama pull qwen2.5:8b
 ```
-后端将在 `http://localhost:8000/` 启动，提供 API 服务。
 
-#### 3.2 启动前端界面
-
+### 问题 2：嵌入向量生成失败
 ```bash
-# 在新终端窗口中，进入前端目录
-cd frontend
-npm install  # 首次运行需要
-npm run dev
+# 检查环境变量
+cat .env | grep OPENAI_API_KEY
+
+# 检查网络连通性
+ping api.openai.com
 ```
-前端将在 `http://localhost:5173/` 启动，提供Web界面。
 
-### 4. 开始使用
-
-- 打开浏览器访问 **http://localhost:5173/**
-- 使用检索面板进行直接查询
-- 创建对话进行多轮对话交互
-- 享受完整的 RAG 检索增强体验！
-
-**注意**：确保同时启动后端和前端服务，前端依赖后端API才能正常工作。
-
-### 5. 调试工具（开发用）
-
-`run_agent.py` 是系统的调试工具，直接调用 `deepseek_agent.py` 的完整功能，用于开发和测试：
-
+### 问题 3：向量数据库导入失败
 ```bash
-# 交互式模式（支持多轮对话）
-python run_agent.py
+# 检查磁盘空间
+df -h
 
-# 单次查询模式
-python run_agent.py --query "你的查询内容"
+# 清理并重建
+rm -rf vector_database/
+python src/process_pipeline.py --mode vector-only --force
 ```
 
-**特点**：
-- ✅ 直接复用 `DeepSeekRetrievalAgent.chat()` 方法，避免重复造轮子
-- ✅ 支持对话历史管理（交互式模式下自动维护）
-- ✅ 包含详细的调试输出（`[DEBUG]` 前缀）
-- ✅ 自动降级机制（DeepSeek 失败时切换到直接检索）
+### 问题 4：JSON 文件格式错误
+```bash
+# 验证 JSON 格式
+python -c "import json; json.load(open('src/data/chunks/book_chunks.json'))"
 
-**调试输出示例**：
-```
-[DEBUG] 初始化 DeepSeek 代理...
-[DEBUG] 调用 agent.chat() 方法...
-[DEBUG] 查询完成，answer_source=retrieval
+# 如有问题，删除并重新生成
+rm src/data/chunks/book_chunks.json
+python src/process_pipeline.py --mode json-only --force
 ```
 
-## 配置说明
+### 问题 5：脚本执行顺序错误
+```bash
+# 使用统一入口脚本，避免手动调用
+python src/process_pipeline.py
 
-配置文件：使用 `.env` 管理运行配置与密钥（项目根）。已提供 `env.example`（复制 `env.example` 到 `.env` 后修改）。
+# 不要单独调用各个脚本
+# ❌ python src/new_identify_title.py
+# ❌ python src/concatenate_text_blocks.py
+```
 
-主要可配置项（在 `.env` 中）：
-- `VECTOR_DB_PATH`：ChromaDB 存储路径（默认 `src/data/vector_database`）。
-- `EMBEDDING_MODEL`：嵌入模型名称（默认 `intfloat/multilingual-e5-large`）。
-- `EMB_CACHE_DIR`：预计算的 sections embeddings 与缓存路径（默认 `src/data/pages_title`）。
-- `FILE_MATCH_THRESHOLD` / `SECTION_MATCH_THRESHOLD`：智能检索中文件名与章节标题匹配阈值（可调）。
-- `DEEPSEEK_API_KEY`（可选）：DeepSeek LLM 服务密钥。
-- `OMP_NUM_THREADS` / `TOKENIZERS_PARALLELISM`：并行相关环境变量建议。
+### 问题 6：DeepSeek API 调用失败
+```bash
+# 检查环境变量配置
+cat .env | grep DEEPSEEK_API_KEY
 
-示例 `.env`（将 `env.example` 复制为 `.env` 或创建 `.env` 并粘贴以下内容）：
+# 测试 API 连通性
+python eval_with_deepseek.py --question "测试问题"
 
-```env
-VECTOR_DB_PATH=src/data/vector_database
+# 查看错误日志
+python eval_with_deepseek.py -v
+```
+
+### 问题 7：评测进度丢失
+```bash
+# 查看最近的进度文件
+ls output/deepseek_eval_progress_*.json
+
+# 恢复评测（自动从最近进度继续）
+python batch_eval_with_deepseek.py
+```
+
+### 问题 8：评测分数异常
+```bash
+# 查看详细评测报告
+cat output/deepseek_batch_eval_report.json
+
+# 重试特定题目
+python eval_with_deepseek.py --question-id F001
+
+# 分析低分原因
+# 检查检索结果质量和引用材料
+```
+
+---
+
+## 🧪 测试验证
+
+### 处理流水线测试
+```bash
+python test_pipeline.py
+```
+
+#### 测试项目
+- ✅ 帮助信息显示
+- ✅ 干跑模式预览
+- ✅ JSON 模式干跑
+- ✅ 向量模式干跑
+
+#### 预期结果
+```
+📊 测试结果汇总
+============================================================
+✅ 通过：4 个
+❌ 失败：0 个
+📈 成功率：100.0%
+============================================================
+```
+
+### RAG 评测系统测试
+
+#### 单题评测测试
+```bash
+# 评测第一个问题
+python eval_with_deepseek.py --question "朱元璋出生时的家庭状况如何？"
+
+# 查看详细日志
+python eval_with_deepseek.py -v
+```
+
+#### 批量评测测试
+```bash
+# 运行批量评测
+python batch_eval_with_deepseek.py
+
+# 实时监控进度
+python monitor_batch_eval.py
+```
+
+#### 评测结果验证
+```bash
+# 查看评测报告摘要
+python -c "import json; data=json.load(open('output/deepseek_batch_eval_report.json')); print(f'评测了 {len(data.get(\"results\", []))} 条数据')"
+
+# 计算平均分
+python -c "
+import json
+data = json.load(open('output/deepseek_batch_eval_report.json'))
+scores = [r['deepseek_evaluation']['scores'] for r in data['results'] if 'deepseek_evaluation' in r]
+avg = {k: sum(s[k] for s in scores)/len(scores) for k in scores[0]}
+print(f'平均分：{avg}')
+"
+
+---
+
+## 📝 开发说明
+
+### 添加新书籍
+1. 将 PDF 放入 `src/data/source/` 目录
+2. 运行处理脚本：
+```bash
+python src/process_pipeline.py
+```
+
+### 自定义配置
+编辑 `.env` 文件：
+```bash
+# OpenAI API 配置
+OPENAI_API_KEY=your_key_here
+OPENAI_BASE_URL=https://api.openai.com/v1
+
+# Ollama 服务配置
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen2.5:8b
+
+# 嵌入模型配置
 EMBEDDING_MODEL=intfloat/multilingual-e5-large
-EMB_CACHE_DIR=src/data/emb_cache
+EMBEDDING_DIMENSION=1024
 
-# DeepSeek API (optional)
-DEEPSEEK_API_KEY=
-DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
-
-# Smart retrieval thresholds (can be tuned)
-FILE_MATCH_THRESHOLD=0.7
-SECTION_MATCH_THRESHOLD=0.75
-
-# Performance / env flags
-OMP_NUM_THREADS=1
-TOKENIZERS_PARALLELISM=false
+# DeepSeek 评测配置（新增）
+DEEPSEEK_API_KEY=your_deepseek_key
+DEEPSEEK_BASE_URL=https://api.deepseek.com
 ```
 
-## 核心功能
+### 性能优化建议
+- 使用 GPU 加速嵌入向量生成
+- 批量处理时设置合适的 batch_size
+- 定期清理向量数据库缓存
+- 使用 SSD 存储提升 IO 性能
 
-### 混合检索引擎
-结合向量检索和关键词检索，返回最相关的 60 个文本块，支持：
-- 智能文件名和章节标题匹配
-- 基于相似度的精确检索
-- 可选的重排序优化
-
-### 智能代理系统
-集成 DeepSeek 大语言模型，基于检索结果生成准确回答，支持：
-- 多轮对话记忆
-- 结构化回答格式
-- 基于历史记录的智能回退
-- 友好的信息不足提示
-
-### 现代化Web界面
-React + Tailwind CSS 构建的响应式前端，提供：
-- 直观的检索面板
-- 对话管理功能
-- 实时引用展示
-- 支持桌面和移动设备
-
-### 对话记忆管理
-基于 LangChain Checkpointer 的持久化多对话支持，包含：
-- 对话创建与删除
-- 历史记录保存
-- 多对话切换
-
-## 目录结构
-
+### 添加新的评测题目
+1. 编辑 `test_questions.json`
+2. 按照现有格式添加问题：
+```json
+{"id": "F099", "question": "你的问题", "type": "fact_qa", "difficulty": "medium"}
 ```
-StoryRag/
-├── run_agent.py              # 调试工具（直接调用 deepseek_agent.py）
-├── .env                     # 环境变量配置
-├── requirements.txt         # Python 依赖
-├── src/                     # 数据处理层
-│   ├── mixed_retrieval.py   # 混合检索引擎
-│   ├── deepseek_agent.py    # DeepSeek 检索代理
-│   ├── embedding_vector.py  # 向量数据库模块
-│   ├── identify_title.py    # 标题识别模块
-│   ├── process_pipeline.py  # 数据处理流水线
-│   └── data/
-│       ├── source/          # 原始 PDF 文件
-│       ├── pages_title/     # JSON 元数据
-│       └── vector_database/ # ChromaDB 向量数据库
-├── backend/                 # 后端服务层
-│   └── app/
-│       ├── main.py          # FastAPI 应用入口
-│       ├── api/             # API 路由
-│       └── core/            # 核心服务（对话管理等）
-├── frontend/                # 前端界面层
-│   ├── src/
-│   │   ├── App.jsx          # 主应用组件
-│   │   ├── components/      # React 组件
-│   │   └── index.css        # Tailwind CSS 样式
-│   ├── package.json         # 前端依赖
-│   └── vite.config.js       # Vite 配置
-└── dialog_checkpoints/      # 对话持久化存储
-```
-
-## 技术架构
-
-### 检索流程
-
-1. **用户查询** → `run_agent.py` 或 Web API
-2. **参数提取** → 解析查询和过滤条件
-3. **智能检索** → `smart_retrieval_impl` 执行检索：
-   - 文件名和章节标题匹配
-   - 向量检索
-   - 可选重排序
-4. **结果处理** → 格式化检索结果
-5. **生成回答** → 基于检索结果和历史记录生成回答
-6. **返回结果** → 包含回答和引用信息
-
-### 核心技术栈
-
-**后端技术栈**：
-- **Web框架**：FastAPI
-- **向量数据库**：ChromaDB
-- **嵌入模型**：multilingual-e5-large
-- **大语言模型**：DeepSeek
-- **对话管理**：LangChain Checkpointer
-- **开发框架**：Python, LangChain
-
-**前端技术栈**：
-- **UI框架**：React 18
-- **构建工具**：Vite
-- **样式框架**：Tailwind CSS v4
-- **HTTP客户端**：Fetch API
-
-## 后端服务
-
-后端为纯净服务，**启动时仅加载已构建的向量库与可选的 LLM agent，不做数据处理**。推荐部署在单独进程/容器中。
-
-### 关键环境变量
-
-- `VECTOR_DB_PATH`：向量数据库路径（示例：`src/data/vector_database`）
-- `EMBEDDING_MODEL`：嵌入模型（仅用于必要时初始化检索器）
-- `DEEPSEEK_API_KEY`：若设置则自动初始化 DeepSeek agent（可选）
-
-### 可用 API
-
-- `POST /api/query`：JSON 请求体 `{ "question": "...", "top_k": 10 }`，返回检索结果
-- `POST /api/dialogs/{id}/chat`：对话交互接口
-- `GET /api/dialogs`：获取对话列表
-- `POST /api/dialogs`：创建新对话
-- `DELETE /api/dialogs/{id}`：删除对话
-
-## 前端界面
-
-现代化Web界面，提供直观的检索和对话交互体验。基于 React + Vite + Tailwind CSS 构建。
-
-### 前端功能
-
-- **检索面板**：直接查询 `/api/query` 接口，展示带引用的检索结果
-- **对话管理**：创建/删除对话，从后端同步对话列表
-- **聊天界面**：与 `/api/dialogs/{id}/chat` 集成，支持上下文对话
-- **引用展示**：显示检索结果的来源信息
-- **响应式设计**：支持桌面和移动设备
-
-## 执行模式
-
-### Web 界面模式（推荐）
-
-同时启动后端和前端服务，通过浏览器访问完整功能：
-
+3. 运行评测：
 ```bash
-# 终端 1: 启动后端
-python -m backend.app.main
-
-# 终端 2: 启动前端
-cd frontend
-npm run dev
+python eval_with_deepseek.py --question "你的问题"
 ```
 
-访问 http://localhost:5173/ 使用 Web 界面。
+---
 
-### 调试工具模式（开发用）
+## 📖 相关文档
 
-直接使用 `run_agent.py` 调试工具（不依赖前后端分离架构）：
+更多详细信息请查看项目中的其他文档：
+- `PROCESS_PIPELINE_README.md` - 详细技术文档
+- `QUICK_REFERENCE.md` - 快速参考手册
+- `PIPELINE_ARCHITECTURE.md` - 架构设计图
 
-```bash
-# 交互式模式（支持多轮对话）
-python run_agent.py
+---
 
-# 单次查询模式
-python run_agent.py --query "你的问题"
+## 📄 许可证
 
-# 自定义检索数量
-python run_agent.py --query "你的问题" --top-k 60
-```
+本项目采用 MIT 许可证。
 
-## 常见问题解答（FAQ）
+---
 
-### Q: 安装依赖时遇到权限问题怎么办？
-A: 在命令前添加 `sudo`（Linux/macOS）或使用管理员权限运行 PowerShell（Windows）。
+## 🤝 贡献
 
-### Q: 后端无法启动，提示端口被占用？
-A: 检查端口 8000 是否被其他程序占用，或修改 FastAPI 配置使用其他端口。
+欢迎提交 Issue 和 Pull Request！
 
-### Q: 前端无法连接到后端？
-A: 确保后端服务已启动，且前端配置中的 API 地址正确。检查浏览器控制台的网络请求错误。
+---
 
-### Q: 检索结果不准确怎么办？
-A: 尝试调整 `.env` 中的 `FILE_MATCH_THRESHOLD` 和 `SECTION_MATCH_THRESHOLD` 阈值，或重新生成向量数据库。
+## 📧 联系方式
 
-### Q: 如何添加新的 PDF 文件？
-A: 将 PDF 文件放入 `src/data/source/` 目录，然后运行 `python src/process_pipeline.py --mode full` 重新生成向量数据库。
+如有问题，请通过 GitHub Issues 联系。
 
-## 贡献指南
+---
 
-1. ** Fork 仓库**：在 GitHub 上 Fork 本项目
-2. **创建分支**：基于 `main` 分支创建特性分支
-3. **提交更改**：提交代码更改，确保遵循项目代码风格
-4. **运行测试**：确保所有测试通过
-5. **创建 Pull Request**：提交 PR，描述更改内容和动机
-
-## 更新日志
-
-### v2.0.0
-- 重构为完整的前后端架构
-- 集成 DeepSeek LLM 智能代理
-- 实现基于对话历史的智能回答
-- 优化检索结果展示
-- 支持多轮对话管理
-
-### v1.0.0
-- 初始版本
-- 基本的 PDF 解析和向量检索功能
-- 简单的命令行界面
-
-## 开发者说明
-
-- 使用 `.env` 与 `requirements.txt` 管理环境和依赖（禁止使用 CI workflow 来写入运行时机密）。
-- 系统会在启动时尝试加载 `src/data/pages_title/sections_embeddings.npz`（若存在）以加速智能检索；否则会在第一次运行时计算并缓存该文件。
-- 若需调试或调整阈值，可直接在 `.env` 中修改 `FILE_MATCH_THRESHOLD` 与 `SECTION_MATCH_THRESHOLD`。
-
-## 安全与备份
-
-- 已将原 `.github/workflows/ci.yml` 备份到 `src/archive/`，并从工作流目录中删除以避免 CI 在无意中使用 workflow 配置来注入环境变量。
-
-## 许可证
-
-MIT License
+**最后更新时间**: 2026 年 3 月 27 日

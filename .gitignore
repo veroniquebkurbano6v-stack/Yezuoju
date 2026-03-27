@@ -152,6 +152,7 @@ src/data/emb_cache/
 src/data/vector_database/
 src/data/response/
 src/data/temp_images/
+src/data/chunks/
 
 # OCR output files
 src/data/source/*/*.txt
@@ -165,12 +166,49 @@ src/data/**/*.sqlite
 src/data/**/*.sqlite3
 src/data/**/*.log
 
-# Debug and temporary files
-src/data/api_response_debug_*.json
-src/data/source/**/*.rar
+# Evaluation results and outputs
+output/*.csv
+output/*.md
+evaluation_dataset.json
+
+# Keep these evaluation results (tracked in git)
+!output/test_results.json
+!output/deepseek_batch_eval_report.json
+
+# Evaluation progress files (temporary)
+output/deepseek_eval_progress_*.json
+output/eval_progress_*.json
+output/batch_eval_progress_*.json
+
+# Test and evaluation scripts (temporary)
+test_*.py
+eval_*.py
+batch_eval_*.py
+monitor_*.py
+run_qa_tests.py
+analyze_*.py
+retry_*.py
+performance_*.py
+optimization_*.py
+full_test_*.py
 
 # Frontend
 frontend/node_modules/
 frontend/dist/
 frontend/.DS_Store
+frontend/.env
+frontend/.env.local
+
+# Backend
+backend/__pycache__/
+backend/*.pyc
+backend/.env
+backend/.env.local
+
+# IDE and editor files
 .trae/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

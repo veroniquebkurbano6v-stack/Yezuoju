@@ -7,20 +7,18 @@ export default function DialogsList({ activeDialog, setActiveDialog }) {
 
   async function fetchDialogs() {
     try {
-      const res = await fetch("/api/dialogs/");
+      const res = await fetch("/api/chat/conversations");
       if (res.ok) {
         const data = await res.json();
-        setDialogs(data.dialogs || []);
-        // 构建 dialog_info 映射
-        if (data.dialog_info && Array.isArray(data.dialog_info)) {
-          const infoMap = {};
-          data.dialog_info.forEach((info, idx) => {
-            if (data.dialogs && data.dialogs[idx]) {
-              infoMap[data.dialogs[idx]] = info;
-            }
-          });
-          setDialogInfo(infoMap);
-        }
+        // 适配后端返回格式：{conversation_ids: [], total_conversations: N}
+        const conversationIds = data.conversation_ids || [];
+        setDialogs(conversationIds);
+        // 构建 dialog_info 映射（后端没有返回 info，使用默认值）
+        const infoMap = {};
+        conversationIds.forEach(id => {
+          infoMap[id] = { title: `对话 ${id.slice(0, 8)}`, message_count: 0 };
+        });
+        setDialogInfo(infoMap);
       }
     } catch (e) {
       console.error("Failed to fetch dialogs:", e);
@@ -33,12 +31,22 @@ export default function DialogsList({ activeDialog, setActiveDialog }) {
     if (loading) return;
     setLoading(true);
     try {
-      const res = await fetch("/api/dialogs/", { method: "POST" });
-      const data = await res.json();
-      if (data.dialog_id) {
-        setActiveDialog(data.dialog_id);
-        await fetchDialogs();
-      }
+      // 后端没有创建对话的接口，调用 query 接口会自动创建
+      // 这里直接生成一个 UUID 作为新对话 ID
+      const newId = 'conv_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+      
+      // 先更新前端状态，让用户立即看到新对话
+      setDialogs(prev => [...prev, newId]);
+      setDialogInfo(prev => ({
+        ...prev,
+        [newId]: { title: `对话 ${newId.slice(0, 8)}`, message_count: 0 }
+      }));
+      
+      setActiveDialog(newId);
+      localStorage.setItem("activeDialog", newId);
+      
+      // 不需要再调用 fetchDialogs，因为我们已经手动更新了状态
+      // await fetchDialogs();
     } catch (e) {
       console.error("创建对话失败:", e);
     } finally {
@@ -48,13 +56,15 @@ export default function DialogsList({ activeDialog, setActiveDialog }) {
 
   async function deleteDialog(id) {
     try {
-      const res = await fetch(`/api/dialogs/${id}`, { method: "DELETE" });
-      if (res.ok) {
-        await fetchDialogs();
-        if (activeDialog === id) {
-          setActiveDialog(null);
-          localStorage.removeItem("activeDialog");
-        }
+      // 后端没有删除对话的接口，前端本地删除
+      setDialogs(prev => prev.filter(dialogId => dialogId !== id));
+      const newInfo = { ...dialogInfo };
+      delete newInfo[id];
+      setDialogInfo(newInfo);
+      
+      if (activeDialog === id) {
+        setActiveDialog(null);
+        localStorage.removeItem("activeDialog");
       }
     } catch (e) {
       console.error(e);

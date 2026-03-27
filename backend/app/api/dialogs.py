@@ -11,15 +11,21 @@ import logging  # 日志记录
 
 # 项目内部模块导入
 from app.core.checkpointer_manager import dialog_manager, get_dialog_memory_dependency  # 对话管理器
-from deepseek_agent import create_deepseek_agent  # DeepSeek AI代理创建函数
+try:
+    from deepseek_agent import create_deepseek_agent  # DeepSeek AI 代理创建函数
+except ImportError:
+    import sys
+    from pathlib import Path
+    project_root = Path(__file__).resolve().parents[3]
+    sys.path.insert(0, str(project_root / "src"))
+    from deepseek_agent import create_deepseek_agent  # DeepSeek AI 代理创建函数
 
 # 配置日志记录器
 logger = logging.getLogger(__name__)
 
 # 创建对话管理路由器
-# prefix: 所有路由添加/api/dialogs前缀
-# tags: 在API文档中分组显示，便于管理
-router = APIRouter(prefix="/api/dialogs", tags=["dialogs"])  # 对话路由
+# tags: 在 API 文档中分组显示，便于管理
+router = APIRouter(tags=["dialogs"])  # 对话路由
 
 
 # 请求数据模型定义
@@ -126,9 +132,9 @@ def chat(
     # 获取FastAPI应用实例，用于访问全局状态
     app = fastapi_request.app if fastapi_request is not None else None
 
-    # 获取已初始化的 agent 和 vector system（在 backend.app.main 的 startup 中创建）
+    # 获取已初始化的 agent 和 vector retriever（在 backend.app.main 的 startup 中创建）
     agent = app.state.agent if app and hasattr(app.state, "agent") else None
-    vector_system = app.state.vector_system if app and hasattr(app.state, "vector_system") else None
+    vector_retriever = app.state.vector_retriever if app and hasattr(app.state, "vector_retriever") else None
 
     # 如果 agent 不存在但环境中有 API KEY，则尝试临时创建一个
     # 这提供了在主启动失败时的备用初始化机制
@@ -182,22 +188,17 @@ def chat(
             logger.error(f"[dialogs.chat] Agent 调用失败: {e}")
             raise HTTPException(status_code=500, detail=f"Agent 调用失败: {e}")
     else:
-        # 策略2：回退到简单的向量检索（当 Agent 不可用时）
+        # 策略 2：回退到简单的向量检索（当 Agent 不可用时）
         logger.info("[dialogs.chat] 使用向量检索回退策略")
         docs = []
-        if vector_system is not None:
+        if vector_retriever is not None:
             try:
-                # 执行向量搜索，返回最相关的文档片段
-                results = vector_system.search(request.question, top_k=4, use_reranker=False)
-                for r in results:
-                    docs.append({
-                        "text": r.text, 
-                        "section_title": r.section_title, 
-                        "page_number": r.page_number
-                    })
+                # TODO: 实现 vector_retriever 的查询逻辑
+                # results = vector_retriever.search(request.question, top_k=4)
+                logger.warning("vector_retriever 查询逻辑待实现")
                 logger.info(f"[dialogs.chat] 检索到 {len(docs)} 个相关文档片段")
             except Exception as e:
-                logger.error(f"[dialogs.chat] 向量检索失败: {e}")
+                logger.error(f"[dialogs.chat] 向量检索失败：{e}")
                 raise HTTPException(status_code=500, detail=f"检索失败: {e}")
         else:
             logger.warning("[dialogs.chat] 向量检索系统也不可用")
@@ -232,12 +233,17 @@ def chat(
     except Exception as e:
         logger.warning(f"[dialogs.chat] 更新对话元数据失败：{e}")
         
-    # 🔧 关键修复：将 retrieved_docs 重命名为 references，以匹配前端期望的字段名
+    # 🔧 关键修复：保留 retrieved_docs 字段，同时添加 references 作为别名
     response = {"dialog_id": dialog_id, **result}
         
-    # 如果 result 中有 retrieved_docs，将其转换为 references
+    # 如果 result 中有 retrieved_docs，同时保留两个字段名以兼容不同的前端需求
     if "retrieved_docs" in response:
-        response["references"] = response.pop("retrieved_docs")
+        # 保留 retrieved_docs 字段供评测脚本使用
+        # 同时添加 references 字段供前端 ChatWindow 使用
+        response["references"] = response["retrieved_docs"]
+        logger.info(f"[dialogs.chat] 返回 {len(response['retrieved_docs'])} 篇检索文档")
+    else:
+        logger.warning("[dialogs.chat] Agent 未返回 retrieved_docs 字段")
         
     return response
 
