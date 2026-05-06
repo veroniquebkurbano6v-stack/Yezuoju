@@ -6,12 +6,16 @@
 import os
 import sys
 import logging
+from pathlib import Path
 from typing import Dict, Any, Optional
 
-# 添加src目录到Python路径
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..", "src")))
+# 添加项目根目录到Python路径
+project_root = Path(__file__).resolve().parents[3]
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
-from deepseek_agent import DeepSeekRetrievalAgent
+from src.agents.deepseek_agent import DeepSeekRetrievalAgent
+from src.models import RAGResponse
 
 logger = logging.getLogger(__name__)
 
@@ -20,32 +24,49 @@ class DeepSeekAgentService:
     DeepSeek智能体服务
     封装DeepSeekRetrievalAgent，提供更简洁的API接口
     """
-    
+
     def __init__(self, vector_db_path: str, api_key: str = None, base_url: str = None, 
-                 embedding_model: str = "intfloat/multilingual-e5-large"):
+                 embedding_model: str = "intfloat/multilingual-e5-large",
+                 role_id: str = None):
         """
-        初始化智能体服务
-        
+
+
         Args:
             vector_db_path: 向量数据库路径
             api_key: DeepSeek API密钥
             base_url: DeepSeek API基础URL
             embedding_model: 嵌入模型名称
+            role_id: 角色标识符，如 'humorous_butler'
+
+        Raises:
+            ValueError: 当 role_id 不在有效角色列表中时
         """
+        self._validate_role_id(role_id)
+
         self.vector_db_path = vector_db_path
         self.api_key = api_key
         self.base_url = base_url
         self.embedding_model = embedding_model
+        self.role_id = role_id
         
         self.agent = None
         
-        # 初始化智能体
         self._initialize_agent()
-    
+
+    @staticmethod
+    def _validate_role_id(role_id):
+        if role_id is None:
+            return
+        from src.core.role_profile import get_role, BUILT_IN_ROLES
+        profile = get_role(role_id)
+        if profile.role_id != role_id:
+            raise ValueError(
+                f"无效的角色ID: '{role_id}'。"
+                f"可用内置角色: {', '.join(sorted(BUILT_IN_ROLES.keys()))}"
+            )
+
     def _initialize_agent(self):
-        """
-        初始化DeepSeek检索代理
-        """
+        """初始化DeepSeek检索代理"""
         try:
             logger.info("正在初始化DeepSeek智能体服务...")
             
@@ -53,7 +74,8 @@ class DeepSeekAgentService:
                 vector_db_path=self.vector_db_path,
                 api_key=self.api_key,
                 base_url=self.base_url,
-                embedding_model=self.embedding_model
+                embedding_model=self.embedding_model,
+                role_id=self.role_id,
             )
             
             logger.info("DeepSeek智能体服务初始化完成")
@@ -74,23 +96,40 @@ class DeepSeekAgentService:
             chat_history: 对话历史
         
         Returns:
-            包含智能体回复的字典
+            包含智能体回复的字典（兼容旧接口）
         """
         try:
             logger.info(f"[AgentService.query] 接收查询请求")
             logger.info(f"[AgentService.query] 原始查询: '{query}'")
             logger.info(f"[AgentService.query] conversation_id: '{conversation_id}'")
             
-            # 调用DeepSeekRetrievalAgent的chat方法
-            result = self.agent.chat(user_input=query, chat_history=chat_history)
+            # 调用DeepSeekRetrievalAgent的chat方法，返回 RAGResponse 对象
+            rag_response: RAGResponse = self.agent.chat(
+                user_input=query, 
+                chat_history=chat_history,
+                session_id=conversation_id or ""
+            )
             
-            if not result.get("success"):
-                logger.error(f"智能体查询失败: {result.get('error')}")
-                raise Exception(result.get("error", "智能体查询失败"))
+            logger.info(f"智能体查询成功: answer='{rag_response.answer[:50]}...'")
             
-            logger.info(f"智能体查询成功: answer='{result['answer'][:50]}...'")
-            
-            return result
+            # 转换为字典格式（保持向后兼容）
+            return {
+                "success": True,
+                "answer": rag_response.answer,
+                "retrieved_docs": [
+                    {
+                        "rank": idx + 1,
+                        "document": doc.content,
+                        "metadata": doc.metadata,
+                        "score": doc.score
+                    }
+                    for idx, doc in enumerate(rag_response.sources)
+                ],
+                "confidence": rag_response.confidence,
+                "session_id": rag_response.session_id,
+                "usage_tokens": rag_response.usage_tokens,
+                "chat_history": chat_history or []
+            }
             
         except Exception as e:
             error_msg = f"智能体服务查询失败: {str(e)}"

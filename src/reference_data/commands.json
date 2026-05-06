@@ -1,0 +1,23 @@
+[
+  {
+    "name": "ask",
+    "responsibility": "Answer user questions using RAG retrieval and DeepSeek LLM",
+    "description": "Primary command for answering questions about the knowledge base",
+    "tools": ["smart_retrieval"],
+    "enabled": true
+  },
+  {
+    "name": "search",
+    "responsibility": "Search the knowledge base and return relevant documents",
+    "description": "Pure search without generating answers",
+    "tools": ["smart_retrieval"],
+    "enabled": true
+  },
+  {
+    "name": "summarize",
+    "responsibility": "Summarize content from specific chapters or documents",
+    "description": "Generate summaries of retrieved content",
+    "tools": ["smart_retrieval"],
+    "enabled": true
+  }
+]

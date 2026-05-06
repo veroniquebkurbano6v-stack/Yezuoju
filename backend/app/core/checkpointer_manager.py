@@ -6,21 +6,29 @@
 import os
 import uuid
 import json
+import logging
 from typing import Optional, Dict, List, Any
 from datetime import datetime
 
 from langchain_core.messages import HumanMessage, AIMessage
 
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 
 class FileSaver:
     """基于文件的检查点存储器（持久化）"""
     
-    def __init__(self, storage_path: str = "./dialog_checkpoints"):
+    def __init__(self, storage_path: str = "../src/data/dialog_checkpoints"):
         self.storage_path = os.path.abspath(storage_path)
-        print(f"[FileSaver] 存储路径: {self.storage_path}")
+        logger.info(f"[FileSaver] 存储路径: {self.storage_path}")
         os.makedirs(self.storage_path, exist_ok=True)
         self.store_file = os.path.join(self.storage_path, "checkpoints.json")
-        print(f"[FileSaver] 文件路径: {self.store_file}")
+        logger.info(f"[FileSaver] 文件路径: {self.store_file}")
         self.store = {}
         self._load_from_file()
     
@@ -39,20 +47,20 @@ class FileSaver:
         """将内存数据保存到文件"""
         try:
             serialized = self._serialize_store(self.store)
-            print(f"[FileSaver] 准备保存数据到: {self.store_file}")
-            print(f"[FileSaver] 当前 store keys: {list(self.store.keys())}")
+            logger.debug(f"[FileSaver] 准备保存数据到: {self.store_file}")
+            logger.debug(f"[FileSaver] 当前 store keys: {list(self.store.keys())}")
             with open(self.store_file, 'w', encoding='utf-8') as f:
                 json.dump(serialized, f, ensure_ascii=False, indent=2)
-            print(f"[FileSaver] 文件保存完成")
+            logger.debug(f"[FileSaver] 文件保存完成")
             
             # 验证保存成功
             if os.path.exists(self.store_file):
                 file_size = os.path.getsize(self.store_file)
-                print(f"[FileSaver] 文件存在, 大小: {file_size} bytes")
+                logger.debug(f"[FileSaver] 文件存在, 大小: {file_size} bytes")
             else:
-                print(f"[FileSaver] 文件不存在!")
+                logger.error(f"[FileSaver] 文件不存在!")
         except Exception as e:
-            print(f"保存检查点失败: {e}")
+            logger.error(f"保存检查点失败: {e}")
     
     def _serialize_store(self, store):
         """递归序列化存储数据，处理 LangChain 消息对象"""
@@ -108,7 +116,7 @@ class FileSaver:
 class MultiDialogManager:
     """基于LangChain Checkpointer的多对话管理器（本地存储）"""
     
-    def __init__(self, storage_path: str = "./dialog_checkpoints"):
+    def __init__(self, storage_path: str = "../src/data/dialog_checkpoints"):
         self.storage_path = os.path.abspath(storage_path)
         os.makedirs(self.storage_path, exist_ok=True)
         
@@ -139,7 +147,7 @@ class MultiDialogManager:
             with open(self._metadata_file, 'w', encoding='utf-8') as f:
                 json.dump(self._dialog_metadata, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"保存元数据失败: {e}")
+            logger.error(f"保存元数据失败: {e}")
 
     def _load_active_dialogs(self):
         """从元数据加载活跃对话列表"""
@@ -180,7 +188,7 @@ class MultiDialogManager:
         try:
             self.checkpointer.delete({"configurable": {"thread_id": dialog_id}}, str(uuid.uuid4()))
         except Exception as e:
-            print(f"删除检查点失败: {e}")
+            logger.error(f"删除检查点失败: {e}")
         
         self._active_dialogs.discard(dialog_id)
         if dialog_id in self._memory_store:
@@ -218,7 +226,7 @@ class MultiDialogManager:
             if messages:
                 return {"messages": messages}
         except Exception as e:
-            print(f"获取对话 {dialog_id} 检查点失败: {e}")
+            logger.error(f"获取对话 {dialog_id} 检查点失败: {e}")
         
         fallback = self._memory_store.get(dialog_id)
         if fallback and isinstance(fallback, dict) and "messages" in fallback:
@@ -285,7 +293,7 @@ class MultiDialogManager:
                 self._dialog_metadata[dialog_id]["updated_at"] = datetime.now().isoformat()
                 self._save_metadata()
         except Exception as e:
-            print(f"保存对话 {dialog_id} 上下文失败: {e}")
+            logger.error(f"保存对话 {dialog_id} 上下文失败: {e}")
 
     def increment_message_count(self, dialog_id: str):
         """增加对话消息计数"""

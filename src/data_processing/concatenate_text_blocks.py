@@ -29,6 +29,14 @@ SUMMARY_MAX_LENGTH = int(os.getenv("SUMMARY_MAX_LENGTH", "180"))  # 摘要最大
 SUMMARY_MIN_LENGTH = int(os.getenv("SUMMARY_MIN_LENGTH", "120"))  # 摘要最小长度
 NEXT_CHUNK_PREVIEW_LENGTH = int(os.getenv("NEXT_CHUNK_PREVIEW_LENGTH", "50"))  # 下文预览长度
 
+# 🔥 打印配置信息，确认加载正确
+print(f"\n配置参数:")
+print(f"   CHUNK_SIZE: {CHUNK_SIZE}")
+print(f"   CHUNK_OVERLAP: {CHUNK_OVERLAP}")
+print(f"   SUMMARY_MAX_LENGTH: {SUMMARY_MAX_LENGTH}")
+print(f"   SUMMARY_MIN_LENGTH: {SUMMARY_MIN_LENGTH}")
+print(f"   NEXT_CHUNK_PREVIEW_LENGTH: {NEXT_CHUNK_PREVIEW_LENGTH}\n")
+
 # 从 .env 读取配置
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "intfloat/multilingual-e5-large")
 VECTOR_DB_PATH = os.getenv("VECTOR_DB_PATH", "src/data/vector_database")
@@ -178,8 +186,8 @@ class TextChunkMerger:
             chunks.append({
                 'text': text,
                 'metadata': {
-                    'pdf_file': pdf_filename,
-                    'chapter_title': chapter_title,
+                    'source': pdf_filename,
+                    'chapter': chapter_title,
                     'start_page': start_page,
                     'end_page': end_page,
                     'summary': ''
@@ -200,8 +208,8 @@ class TextChunkMerger:
                 chunks.append({
                     'text': chunk_text,
                     'metadata': {
-                        'pdf_file': pdf_filename,
-                        'chapter_title': chapter_title,
+                        'source': pdf_filename,
+                        'chapter': chapter_title,
                         'start_page': start_page,
                         'end_page': end_page,
                         'summary': ''
@@ -242,8 +250,8 @@ class TextChunkMerger:
                 chunks.append({
                     'text': chunk_text,
                     'metadata': {
-                        'pdf_file': pdf_filename,
-                        'chapter_title': chapter_title,
+                        'source': pdf_filename,
+                        'chapter': chapter_title,
                         'start_page': start_page,
                         'end_page': end_page,
                         'summary': ''
@@ -373,16 +381,16 @@ class TextChunkMerger:
                 try:
                     # 获取当前文本块内容和章节信息
                     current_text = chunk['text']
-                    current_chapter = chunk['metadata']['chapter_title']
+                    current_chapter = chunk['metadata']['chapter']
                     
                     # 构建上下文：仅拼接下一文本块的前 50 字（仅限同一章节）
                     next_text_preview = ""
                     if i < len(chunks_to_process) - 1:
-                        next_chapter = chunks_to_process[i + 1]['metadata']['chapter_title']
+                        next_chapter = chunks_to_process[i + 1]['metadata']['chapter']
                         # 仅当属于同一章节时才拼接预览文本
                         if current_chapter == next_chapter:
                             next_text = chunks_to_process[i + 1]['text']
-                            next_text_preview = next_text[:50]  # 简化为 50 字
+                            next_text_preview = next_text[:NEXT_CHUNK_PREVIEW_LENGTH]
                     
                     # 🔍 打印详细的输入信息
                     if attempt == 1 or debug_mode:
@@ -390,7 +398,7 @@ class TextChunkMerger:
                         print(f"【块 {i+1}】章节：{current_chapter}")
                         print(f"文本长度：{len(current_text)} 字符")
                         if next_text_preview:
-                            print(f"下文预览（50 字）：{next_text_preview}")
+                            print(f"下文预览（{NEXT_CHUNK_PREVIEW_LENGTH} 字）：{next_text_preview}")
                     
                     # 🎯 构建优化的 prompt
                     prompt_text = self._build_prompt(current_text, next_text_preview)
@@ -606,7 +614,7 @@ def main():
             print("="*60)
             for i, chunk in enumerate(debug_chunks, 1):
                 print(f"\n【块 {i}】")
-                print(f"  章节：{chunk['metadata']['chapter_title']}")
+                print(f"  章节：{chunk['metadata']['chapter']}")
                 print(f"  页码：{chunk['metadata']['start_page']}-{chunk['metadata']['end_page']}")
                 print(f"  文本长度：{len(chunk['text'])} 字符")
                 print(f"  摘要长度：{len(chunk['metadata']['summary'])} 字符")
@@ -618,12 +626,12 @@ def main():
             chunks = merger.generate_summary(chunks, debug_mode=False)
             all_processed_chunks.extend(chunks)
         
-    # 保存当前 PDF 的结果（转换为最终格式）
+        # 保存当前 PDF 的结果（转换为最终格式）
         final_output = []
         for i, chunk in enumerate(chunks):
             # 生成语义化唯一 ID
-            pdf_file = chunk["metadata"]["pdf_file"].replace(".pdf", "")
-            chapter = chunk["metadata"]["chapter_title"]
+            pdf_file = chunk["metadata"]["source"].replace(".pdf", "")
+            chapter = chunk["metadata"]["chapter"]
             start_page = chunk["metadata"]["start_page"]
             end_page = chunk["metadata"]["end_page"]
             
@@ -639,8 +647,8 @@ def main():
                 "embedding": [],  # 稍后由嵌入模型生成
                 "document": chunk["metadata"]["summary"],  # 使用摘要作为嵌入文本
                 "metadata": {
-                    "source": chunk["metadata"]["pdf_file"],
-                    "chapter": chunk["metadata"]["chapter_title"],
+                    "source": chunk["metadata"]["source"],
+                    "chapter": chunk["metadata"]["chapter"],
                     "start_page": start_page,
                     "end_page": end_page,
                     "full_text": chunk["text"]  # 完整原文

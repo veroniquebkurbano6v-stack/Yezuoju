@@ -11,14 +11,15 @@ import logging  # 日志记录
 
 # 项目内部模块导入
 from app.core.checkpointer_manager import dialog_manager, get_dialog_memory_dependency  # 对话管理器
-try:
-    from deepseek_agent import create_deepseek_agent  # DeepSeek AI 代理创建函数
-except ImportError:
-    import sys
-    from pathlib import Path
-    project_root = Path(__file__).resolve().parents[3]
-    sys.path.insert(0, str(project_root / "src"))
-    from deepseek_agent import create_deepseek_agent  # DeepSeek AI 代理创建函数
+
+# 添加项目根目录到 Python 路径
+import sys
+from pathlib import Path
+project_root = Path(__file__).resolve().parents[3]
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+from src.agents.deepseek_agent import create_deepseek_agent  # DeepSeek AI 代理创建函数
 
 # 配置日志记录器
 logger = logging.getLogger(__name__)

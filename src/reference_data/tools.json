@@ -1,0 +1,14 @@
+[
+  {
+    "name": "smart_retrieval",
+    "responsibility": "Intelligent hybrid retrieval combining vector search and keyword matching",
+    "description": "Performs smart retrieval with automatic query analysis, keyword extraction, and MMR-based reranking. Returns top-k relevant document chunks.",
+    "parameters": {
+      "query": "string - The search query (required)",
+      "keywords": "array[string] - Optional keywords for enhanced retrieval",
+      "top_k": "int - Number of results to return (default: 5)"
+    },
+    "return_type": "list[Document]",
+    "enabled": true
+  }
+]

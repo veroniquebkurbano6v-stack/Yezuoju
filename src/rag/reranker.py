@@ -7,18 +7,18 @@
 """
 
 from typing import List, Dict, Any
+from functools import lru_cache
 import math
 import time
 import logging
 
 logger = logging.getLogger(__name__)
 
-# === 全局 CrossEncoder 模型缓存（单例模式） ===
-_cross_encoder_cache = {}
-
+# 🔥 使用 lru_cache 优化 CrossEncoder 模型加载（单例模式）
+@lru_cache(maxsize=1)
 def get_cross_encoder_model(model_name: str = "BAAI/bge-reranker-v2-m3"):
     """
-    获取或创建 CrossEncoder 模型（单例模式）
+    获取或创建 CrossEncoder 模型（单例模式，使用 lru_cache 自动缓存）
     
     Args:
         model_name: 模型名称
@@ -26,16 +26,13 @@ def get_cross_encoder_model(model_name: str = "BAAI/bge-reranker-v2-m3"):
     Returns:
         CrossEncoder 实例
     """
-    if model_name not in _cross_encoder_cache:
-        logger.info(f"🤖 [首次加载] CrossEncoder 模型：{model_name}")
-        start = time.time()
-        from sentence_transformers import CrossEncoder
-        _cross_encoder_cache[model_name] = CrossEncoder(model_name)
-        elapsed = time.time() - start
-        logger.info(f"⏱️  [性能] CrossEncoder 模型加载耗时：{elapsed:.2f}秒")
-    else:
-        logger.info(f"✅ [缓存命中] 使用已加载的 CrossEncoder 模型：{model_name}")
-    return _cross_encoder_cache[model_name]
+    logger.info(f"🤖 [首次加载] CrossEncoder 模型：{model_name}")
+    start = time.time()
+    from sentence_transformers import CrossEncoder
+    model = CrossEncoder(model_name)
+    elapsed = time.time() - start
+    logger.info(f"⏱️  [性能] CrossEncoder 模型加载耗时：{elapsed:.2f}秒")
+    return model
 
 
 class ResultFusion:

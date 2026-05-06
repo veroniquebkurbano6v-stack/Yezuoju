@@ -93,7 +93,7 @@ export default function ChatWindow({ dialogId, selectedPdf, setSelectedPdf, onCi
             section_title: ref.section_title,
             page_number: ref.page_number,
             score: ref.score,
-            text: ref.text  // 🔧 修复：使用 text 字段而不是 text_preview
+            text: ref.text_preview
           }));
           onCitationsUpdate(citations);
         }

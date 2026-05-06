@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  # Redis 主服务
+  redis:
+    image: redis:7-alpine
+    container_name: storyrag-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: >
+      redis-server 
+      --appendonly yes 
+      --maxmemory 512mb 
+      --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_PASSWORD:-your_secure_password}
+    restart: unless-stopped
+    networks:
+      - storyrag-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  
+  # Redis 可视化管理界面
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: storyrag-redis-ui
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=your_secure_password
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+    networks:
+      - storyrag-network
+    restart: unless-stopped
+
+volumes:
+  redis_data:
+    driver: local
+
+networks:
+  storyrag-network:
+    driver: bridge

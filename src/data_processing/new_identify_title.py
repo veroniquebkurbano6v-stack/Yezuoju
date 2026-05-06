@@ -888,8 +888,9 @@ def main():
     """主函数 - 遍历并处理所有 PDF 文件"""
     print("=" * 60)
     print("开始执行...")
-    # 🔥 定义路径 - 使用当前脚本所在的项目根目录
-    project_root = Path(__file__).resolve().parent.parent
+    # 🔥 定义路径 - new_identify_title.py 位于 src/data_processing/
+    # parent 是 src/, parent.parent 是项目根目录
+    project_root = Path(__file__).resolve().parent.parent.parent
     source_dir = project_root / "src" / "data" / "source"
     output_dir = project_root / "src" / "data" / "pages_title"
     

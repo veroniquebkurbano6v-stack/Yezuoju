@@ -4,6 +4,7 @@ import DialogsList from "./components/DialogsList";
 import ChatWindow from "./components/ChatWindow";
 import QueryPanel from "./components/QueryPanel";
 import CitationsPanel from "./components/CitationsPanel";
+import RoleSelector from "./components/RoleSelector";
 import Star from "./components/Star";
 
 const starConfigs = [
@@ -98,9 +99,11 @@ function shuffleArray(array) {
 
 export default function App() {
   const [dialogs, setDialogs] = useState([]);
-  const [activeDialog, setActiveDialog] = useState(null);
-  const [selectedPdf, setSelectedPdf] = useState(""); // 全局 PDF 选择状态
-  const [citations, setCitations] = useState([]); // 引用展示数据
+  const [activeDialog, setActiveDialog] = useState(() => {
+    return localStorage.getItem("activeDialog") || null;
+  });
+  const [selectedPdf, setSelectedPdf] = useState("");
+  const [citations, setCitations] = useState([]);
   const [activeStarIds, setActiveStarIds] = useState([]);
   const [starOrder, setStarOrder] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -109,6 +112,19 @@ export default function App() {
   const currentIndexRef = useRef(0);
   const starOrderRef = useRef([]);
   const isAnimatingRef = useRef(false);
+
+  const createNewDialog = useCallback(() => {
+    const newId = 'conv_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+    setActiveDialog(newId);
+    localStorage.setItem("activeDialog", newId);
+    return newId;
+  }, []);
+
+  useEffect(() => {
+    if (!activeDialog) {
+      createNewDialog();
+    }
+  }, [activeDialog, createNewDialog]);
 
   useEffect(() => {
     if (!initializedRef.current) {
@@ -182,7 +198,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <header className="relative bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-500 shadow-lg overflow-hidden">
+      <header className="relative bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-500 shadow-lg">
         <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAiIGhlaWdodD0iNjAiIHZpZXdCb3g9IjAgMCA2MCA2MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48ZyBmaWxsPSJub25lIiBmaWxsLXJ1bGU9ImV2ZW5vZGQiPjxnIGZpbGw9IiNmZmYiIGZpbGwtb3BhY2l0eT0iMC4xIj48cGF0aCBkPSJNMzYgMzRjMC0yIDItNCAyLTRzLTItMi00LTJjMCAwLTItMi0yLTRzMi00IDItNCAyIDIgNCAyczQgMiA0IDQtMiA0LTIgNC0yIDItNCAyYzAgMC0yIDItMiA0czIgNCAyIDQiLz48L2c+PC9nPjwvc3ZnPg==')] opacity-30"></div>
         
         <div className="absolute top-4 right-20 w-20 h-20 bg-cyan-300 opacity-20 rounded-full blur-xl animate-bounce" style={{animationDuration: '3s'}}></div>
@@ -241,6 +257,10 @@ export default function App() {
               <span className="w-2 h-2 bg-pink-400 rounded-full animate-pulse" style={{animationDelay: '1s'}}></span>
               多语言支持
             </div>
+          </div>
+
+          <div className="mt-4 flex justify-end">
+            <RoleSelector />
           </div>
         </div>
         

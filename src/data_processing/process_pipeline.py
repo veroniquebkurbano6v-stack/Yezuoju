@@ -38,7 +38,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # === 路径配置 ===
-PROJECT_ROOT = Path(__file__).parent.parent
+# process_pipeline.py 位于 src/data_processing/
+# 所以 parent 是 src/, parent.parent 是项目根目录
+PROJECT_ROOT = Path(__file__).parent.parent.parent
 SRC_DIR = PROJECT_ROOT / "src"
 DATA_DIR = SRC_DIR / "data"
 SOURCE_DIR = DATA_DIR / "source"  # PDF 源文件
@@ -47,11 +49,12 @@ CHUNKS_DIR = DATA_DIR / "chunks"  # 文本块 JSON
 VECTOR_DB_DIR = DATA_DIR / "vector_database"  # 向量数据库
 
 # === 脚本路径 ===
+# 所有处理脚本都位于 data_processing 目录下
 SCRIPTS = {
-    "identify_title": SRC_DIR / "new_identify_title.py",
-    "concatenate": SRC_DIR / "concatenate_text_blocks.py",
-    "embeddings": SRC_DIR / "ingest_embeddings.py",
-    "vector_db": SRC_DIR / "new_embedding_vector.py"
+    "identify_title": PROJECT_ROOT / "src" / "data_processing" / "new_identify_title.py",
+    "concatenate": PROJECT_ROOT / "src" / "data_processing" / "concatenate_text_blocks.py",
+    "embeddings": PROJECT_ROOT / "src" / "data_processing" / "ingest_embeddings.py",
+    "vector_db": PROJECT_ROOT / "src" / "data_processing" / "new_embedding_vector.py"
 }
 
 
@@ -119,12 +122,21 @@ class ProcessingPipeline:
         logger.info(f"📋 执行命令：{' '.join(cmd)}")
         
         try:
+            # 设置环境变量，确保子进程能找到 src 模块
+            env = os.environ.copy()
+            # 将项目根目录添加到 PYTHONPATH
+            pythonpath = str(PROJECT_ROOT)
+            if 'PYTHONPATH' in env:
+                pythonpath = f"{pythonpath}{os.pathsep}{env['PYTHONPATH']}"
+            env['PYTHONPATH'] = pythonpath
+            
             # 运行脚本
             result = subprocess.run(
                 cmd,
                 check=True,
                 capture_output=False,
-                text=True
+                text=True,
+                env=env  # 传递环境变量
             )
             
             logger.info(f"✅ {step_name} 执行成功")
@@ -250,34 +262,33 @@ class ProcessingPipeline:
         start_time = datetime.now()
         
         # 步骤 1: 生成嵌入向量
+        embeddings_args = []
+        if self.book_name:
+            embeddings_args.extend(["--book", self.book_name])
+        if self.force:
+            embeddings_args.append("--force")
+        
         if not self.run_step(
             "步骤 1/2: 生成嵌入向量",
             SCRIPTS["embeddings"],
-            [
-                "--book", self.book_name,
-                "--force" if self.force else []
-            ] if self.book_name else [
-                "--force" if self.force else []
-            ]
+            embeddings_args
         ):
             return False
         
         # 步骤 2: 导入向量数据库
+        vector_db_args = [
+            "--input-dir", str(CHUNKS_DIR),
+            "--db-path", str(VECTOR_DB_DIR)
+        ]
+        if self.book_name:
+            vector_db_args.extend(["--book", self.book_name])
+        if self.force:
+            vector_db_args.extend(["--force", "--clear-db"])
+        
         if not self.run_step(
             "步骤 2/2: 导入向量数据库",
             SCRIPTS["vector_db"],
-            [
-                "--input-dir", str(CHUNKS_DIR),
-                "--db-path", str(VECTOR_DB_DIR),
-                "--book", self.book_name,
-                "--force" if self.force else [],
-                "--clear-db" if self.force else []
-            ] if self.book_name else [
-                "--input-dir", str(CHUNKS_DIR),
-                "--db-path", str(VECTOR_DB_DIR),
-                "--force" if self.force else [],
-                "--clear-db" if self.force else []
-            ]
+            vector_db_args
         ):
             return False
         

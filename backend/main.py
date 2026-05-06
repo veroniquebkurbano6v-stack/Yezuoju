@@ -7,21 +7,39 @@ PDF智能检索系统API服务
 import os
 import sys
 import logging
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
 
-# 加载环境变量
-load_dotenv()
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
-# 添加项目根目录到Python路径
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# 配置日志
-logging.basicConfig(level=logging.INFO)
+class SafeStreamHandler(logging.StreamHandler):
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            stream = self.stream
+            if hasattr(stream, 'encoding') and stream.encoding:
+                msg = msg.encode(stream.encoding, errors='replace').decode(stream.encoding)
+            stream.write(msg + self.terminator)
+            self.flush()
+        except Exception:
+            pass
+
+
+_root_logger = logging.getLogger()
+_root_logger.handlers.clear()
+_root_logger.addHandler(SafeStreamHandler(sys.stdout))
+_root_logger.setLevel(logging.INFO)
+
 logger = logging.getLogger(__name__)
 
-# 创建FastAPI应用
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
+from dotenv import load_dotenv
+
+load_dotenv()
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 app = FastAPI(
     title="PDF智能检索系统 API",
     description="基于RAG技术的PDF智能检索前后端系统",
@@ -30,13 +48,12 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
-# 配置CORS
 origins = [
-    "http://localhost:3000",  # 前端开发服务器地址
-    "http://localhost:5173",  # Vite默认地址
-    "http://localhost:5174",  # Vite备用地址
-    "http://localhost:8080",  # 可能的前端生产服务器地址
-    os.getenv("FRONTEND_URL", "http://localhost:3000"),  # 从环境变量获取前端地址
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://localhost:8080",
+    os.getenv("FRONTEND_URL", "http://localhost:3000"),
 ]
 
 app.add_middleware(
@@ -47,16 +64,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 健康检查端点
 @app.get("/api/health")
 async def health_check():
-    """健康检查端点"""
     return {"status": "healthy", "message": "PDF智能检索系统API运行正常"}
 
-# 系统状态检查端点
+
+@app.get("/")
+async def root():
+    return RedirectResponse(url="http://localhost:5173/")
+
 @app.get("/api/system/status")
 async def system_status():
-    """系统状态检查端点"""
     return {
         "status": "running",
         "version": "2.0.0",
@@ -64,10 +82,8 @@ async def system_status():
         "timestamp": os.environ.get("TIMESTAMP", "N/A")
     }
 
-# 导入路由
 from app.api.chat_router import chat_router
 
-# 注册路由
 app.include_router(chat_router, prefix="/api/chat", tags=["chat"])
 
 if __name__ == "__main__":
@@ -77,4 +93,7 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     
     logger.info(f"启动FastAPI服务，地址: {host}:{port}")
+    logger.info(f"  API 文档:   http://localhost:{port}/docs")
+    logger.info(f"  健康检查:   http://localhost:{port}/api/health")
+    logger.info(f"  前端页面:   http://localhost:5173/")
     uvicorn.run(app, host=host, port=port)

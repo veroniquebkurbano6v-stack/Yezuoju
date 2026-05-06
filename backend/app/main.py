@@ -9,13 +9,15 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # 加载环境变量配置（显式指定项目根目录的 .env 文件）
-project_root = Path(__file__).resolve().parents[2]  # 项目根目录
+from src.utils.paths import get_project_root
+project_root = get_project_root()
 env_path = project_root / ".env"
 load_dotenv(dotenv_path=env_path)
 
 # 确保项目src和backend目录可被Python导入
-project_root = Path(__file__).resolve().parents[2]  # 项目根目录: StoryRag v2.0
-backend_root = Path(__file__).resolve().parent.parent  # backend目录
+from src.utils.paths import get_project_root, get_backend_dir
+project_root = get_project_root()
+backend_root = get_backend_dir()
 sys.path.insert(0, str(project_root.joinpath("src")))  # 添加src到Python路径
 sys.path.insert(0, str(backend_root))  # 添加backend到Python路径
 
@@ -36,10 +38,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # 核心功能模块导入
-from mixed_retrieval import VectorRetriever  # 向量检索器
-from deepseek_agent import create_deepseek_agent  # DeepSeek AI 代理
+from src.rag.mixed_retrieval import VectorRetriever  # 向量检索器
 
-# API路由导入 - 使用相对导入
+# Redis Session Manager（可选，用于企业级缓存）
+try:
+    from backend.app.core.session_manager_redis import redis_session_manager
+    REDIS_AVAILABLE = True
+    logger.info("✅ Redis Session Manager 可用")
+except ImportError:
+    redis_session_manager = None
+    REDIS_AVAILABLE = False
+    logger.warning("⚠️ Redis Session Manager 未安装，使用文件存储版本")
+
+# API 路由导入 - 使用相对导入
 from app.api.dialogs import router as dialogs_router  # 对话相关路由
 from app.api.chat_router import chat_router  # 聊天相关路由（PDF选择和查询功能）
 
@@ -92,12 +103,11 @@ def create_app() -> FastAPI:
         logger.info("="*60)
         
         # 从环境变量读取配置，设置默认值
-        # 使用绝对路径，避免从 backend 目录运行时路径解析错误
+        from src.utils.paths import get_vector_db_dir
         db_path = os.getenv("VECTOR_DB_PATH")
         if not db_path:
             # 如果没有设置环境变量，使用项目根目录的相对路径
-            project_root = Path(__file__).resolve().parents[2]  # 返回到项目根目录
-            db_path = str(project_root / "src" / "data" / "vector_database")
+            db_path = str(get_vector_db_dir())
         else:
             # 如果是相对路径，转换为绝对路径
             db_path = os.path.abspath(db_path)
@@ -118,7 +128,7 @@ def create_app() -> FastAPI:
         # 初始化 LangChain 工具（使用现有工具类）
         try:
             logger.info("开始初始化 LangChain tools...")
-            from langchain_retrieval_tools import SmartRetrievalTool
+            from src.tools.langchain_retrieval_tools import SmartRetrievalTool
             from langchain_core.tools import Tool
                     
             # 创建工具实例
@@ -138,7 +148,7 @@ def create_app() -> FastAPI:
             logger.error(f"❌ LangChain tools 初始化失败：{e}", exc_info=True)
             app.state.langchain_tools = None
                 
-        # 预初始化 DeepSeek 智能体服务（懒加载改为预加载）
+        # 预初始化 DeepSeek 智能体服务（唯一入口）
         api_key = os.getenv("DEEPSEEK_API_KEY")
         if api_key:
             try:
@@ -151,7 +161,8 @@ def create_app() -> FastAPI:
                     vector_db_path=settings.VECTOR_DB_PATH,
                     api_key=settings.DEEPSEEK_API_KEY,
                     base_url=settings.DEEPSEEK_BASE_URL,
-                    embedding_model=settings.EMBEDDING_MODEL
+                    embedding_model=settings.EMBEDDING_MODEL,
+                    role_id=os.getenv("DEFAULT_ROLE_ID", "humorous_butler"),
                 )
                 logger.info("✅ DeepSeek 智能体服务预初始化完成")
             except Exception as e:
@@ -160,29 +171,37 @@ def create_app() -> FastAPI:
         else:
             logger.warning("⚠️  未配置 DEEPSEEK_API_KEY，跳过智能体服务初始化")
             app.state.agent_service = None
-                
-        # 保留旧的 agent 初始化逻辑以兼容
-        if api_key:
+        
+        # 初始化 Redis Session Manager（如果可用）
+        global REDIS_AVAILABLE
+        if REDIS_AVAILABLE:
             try:
-                app.state.agent = create_deepseek_agent(
-                    db_path,
-                    api_key=api_key,
-                    base_url=os.getenv("DEEPSEEK_BASE_URL"),
-                    tools_instance=app.state.langchain_tools
-                )
-                logger.info("DeepSeek agent 已初始化")
+                logger.info("开始初始化 Redis Session Manager...")
+                await redis_session_manager.connect()
+                stats = await redis_session_manager.get_stats()
+                app.state.redis_session_manager = redis_session_manager
+                logger.info(f"✅ Redis Session Manager 已连接 - 版本：{stats['redis_version']}, 内存：{stats['used_memory_human']}")
             except Exception as e:
-                logger.warning(f"DeepSeek agent 初始化失败：{e}")
-                app.state.agent = None
+                logger.error(f"❌ Redis Session Manager 连接失败：{e}", exc_info=True)
+                app.state.redis_session_manager = None
+                REDIS_AVAILABLE = False
         else:
-            logger.info("未配置 DEEPSEEK_API_KEY，跳过 DeepSeek agent 初始化")
-            app.state.agent = None
+            logger.info("使用文件存储版 Session Manager")
+            app.state.redis_session_manager = None
 
     # 应用关闭事件处理器
     @app.on_event("shutdown")
     async def shutdown_event():
         """应用停止时的清理事件"""
         logger.info("应用停止，释放资源")
+        
+        # 关闭 Redis 连接
+        if REDIS_AVAILABLE and app.state.redis_session_manager:
+            try:
+                await app.state.redis_session_manager.close()
+                logger.info("✅ Redis Session Manager 已关闭")
+            except Exception as e:
+                logger.error(f"❌ 关闭 Redis Session Manager 失败：{e}")
 
     # 依赖注入提供者函数
     def get_vector_retriever():
@@ -194,10 +213,17 @@ def create_app() -> FastAPI:
 
     def get_agent():
         """
-        DeepSeek代理依赖注入函数
-        如果代理未初始化或不存在则返回None，避免AttributeError
+        DeepSeek 代理依赖注入函数
+        如果代理未初始化或不存在则返回 None，避免 AttributeError
         """
         return getattr(app.state, "agent", None)
+        
+    def get_redis_session_manager():
+        """
+        Redis Session Manager 依赖注入函数
+        如果 Redis 未初始化则返回 None
+        """
+        return getattr(app.state, "redis_session_manager", None) if REDIS_AVAILABLE else None
 
     # 核心查询 API 端点 - 已移至 chat_router 中实现
     # @app.post("/api/query")
@@ -219,7 +245,8 @@ def create_app() -> FastAPI:
     #     }
 
     # 挂载前端静态文件 - 最后执行，避免覆盖API路由
-    frontend_path = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+    from src.utils.paths import get_frontend_dir
+    frontend_path = get_frontend_dir() / "dist"
     if frontend_path.exists():
         # 挂载静态文件，启用HTML模式，支持SPA路由
         app.mount("/", StaticFiles(directory=str(frontend_path), html=True), name="static")

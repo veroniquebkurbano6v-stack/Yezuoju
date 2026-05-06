@@ -10,20 +10,35 @@ export default function DialogsList({ activeDialog, setActiveDialog }) {
       const res = await fetch("/api/chat/conversations");
       if (res.ok) {
         const data = await res.json();
-        // 适配后端返回格式：{conversation_ids: [], total_conversations: N}
-        const conversationIds = data.conversation_ids || [];
-        setDialogs(conversationIds);
-        // 构建 dialog_info 映射（后端没有返回 info，使用默认值）
+        const serverConversations = data.conversations || [];
+        const currentLocalDialog = localStorage.getItem("activeDialog");
+        const serverIds = serverConversations.map(c => c.session_id);
+        const merged = [...new Set([...serverIds, currentLocalDialog].filter(Boolean))];
+        setDialogs(merged);
         const infoMap = {};
-        conversationIds.forEach(id => {
-          infoMap[id] = { title: `对话 ${id.slice(0, 8)}`, message_count: 0 };
+        serverConversations.forEach(c => {
+          infoMap[c.session_id] = {
+            title: `对话 ${c.session_id.slice(0, 8)}`,
+            message_count: c.message_count || 0,
+          };
+        });
+        merged.forEach(id => {
+          if (!infoMap[id]) {
+            infoMap[id] = { title: `对话 ${id.slice(0, 8)}`, message_count: 0 };
+          }
         });
         setDialogInfo(infoMap);
       }
     } catch (e) {
       console.error("Failed to fetch dialogs:", e);
-      setDialogs([]);
-      setDialogInfo({});
+      const currentLocalDialog = localStorage.getItem("activeDialog");
+      if (currentLocalDialog) {
+        setDialogs([currentLocalDialog]);
+        setDialogInfo({ [currentLocalDialog]: { title: `对话 ${currentLocalDialog.slice(0, 8)}`, message_count: 0 } });
+      } else {
+        setDialogs([]);
+        setDialogInfo({});
+      }
     }
   }
 
@@ -31,11 +46,8 @@ export default function DialogsList({ activeDialog, setActiveDialog }) {
     if (loading) return;
     setLoading(true);
     try {
-      // 后端没有创建对话的接口，调用 query 接口会自动创建
-      // 这里直接生成一个 UUID 作为新对话 ID
       const newId = 'conv_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
       
-      // 先更新前端状态，让用户立即看到新对话
       setDialogs(prev => [...prev, newId]);
       setDialogInfo(prev => ({
         ...prev,
@@ -45,8 +57,7 @@ export default function DialogsList({ activeDialog, setActiveDialog }) {
       setActiveDialog(newId);
       localStorage.setItem("activeDialog", newId);
       
-      // 不需要再调用 fetchDialogs，因为我们已经手动更新了状态
-      // await fetchDialogs();
+      fetch(`/api/chat/history?conversation_id=${newId}`).catch(() => {});
     } catch (e) {
       console.error("创建对话失败:", e);
     } finally {
@@ -56,7 +67,14 @@ export default function DialogsList({ activeDialog, setActiveDialog }) {
 
   async function deleteDialog(id) {
     try {
-      // 后端没有删除对话的接口，前端本地删除
+      const res = await fetch("/api/chat/clear", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversation_id: id })
+      });
+      if (!res.ok) {
+        console.warn("后端删除对话失败，仅删除本地记录");
+      }
       setDialogs(prev => prev.filter(dialogId => dialogId !== id));
       const newInfo = { ...dialogInfo };
       delete newInfo[id];
@@ -67,7 +85,7 @@ export default function DialogsList({ activeDialog, setActiveDialog }) {
         localStorage.removeItem("activeDialog");
       }
     } catch (e) {
-      console.error(e);
+      console.error("删除对话失败:", e);
     }
   }
 

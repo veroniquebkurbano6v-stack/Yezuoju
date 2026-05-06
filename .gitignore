@@ -154,6 +154,13 @@ src/data/response/
 src/data/temp_images/
 src/data/chunks/
 
+# Session data (runtime-generated, contains user conversations)
+src/data/sessions/
+
+# Memory state files (runtime-modified)
+src/data/memory/*.json
+!src/data/memory/.gitkeep
+
 # OCR output files
 src/data/source/*/*.txt
 src/data/source/*/*.jsonl
@@ -180,6 +187,9 @@ output/deepseek_eval_progress_*.json
 output/eval_progress_*.json
 output/batch_eval_progress_*.json
 
+# Debug and test scripts (keep debug_tool.py)
+debug_queries.log
+
 # Test and evaluation scripts (temporary)
 test_*.py
 eval_*.py
@@ -191,6 +201,13 @@ retry_*.py
 performance_*.py
 optimization_*.py
 full_test_*.py
+
+# Debug / training / temporary scripts (underscore prefix)
+backend/_*.py
+_debug_*.py
+_training_*.py
+_verify_*.py
+_check_*.py
 
 # Frontend
 frontend/node_modules/
@@ -207,8 +224,14 @@ backend/.env.local
 
 # IDE and editor files
 .trae/
+.lingma/
 *.swp
 *.swo
 *~
 .DS_Store
 Thumbs.db
+
+# Temporary documentation / notes (Chinese-named, auto-generated)
+角色稳定机制总结.md
+*_总结.md
+*_报告.md

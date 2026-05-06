@@ -59,7 +59,7 @@ export default function QueryPanel({ selectedPdf, setSelectedPdf }) {
         <div className="flex flex-col items-center justify-center py-8">
           <div className="flex items-center gap-2 text-indigo-300/80">
             <span className="text-lg">🌟</span>
-            <span className="text-lg font-serif tracking-wide">请在下方对话框中输入问题进行对话</span>
+            <span className="text-lg font-serif tracking-wide">在右侧对话窗口输入问题开始探索</span>
             <span className="text-lg">✨</span>
           </div>
         </div>

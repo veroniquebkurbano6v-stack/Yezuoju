@@ -16,8 +16,12 @@ import json
 import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+from functools import lru_cache
 import time
 from dotenv import load_dotenv
+
+# 导入 MMR 检索器
+from .mmr_retrieval import MMRRetriever
 
 # 加载环境变量
 load_dotenv()
@@ -29,14 +33,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # === 全局模型缓存（真正的单例模式） ===
-_model_cache = {
-    "embedding": None,
-    "cross_encoder": None
-}
-
+# 🔥 使用 lru_cache 优化模型加载（单例模式）
+@lru_cache(maxsize=1)
 def get_embedding_model(model_name: str = "BAAI/bge-m3"):
     """
-    获取或创建嵌入模型（单例模式）
+    获取或创建嵌入模型（单例模式，使用 lru_cache 自动缓存）
     
     Args:
         model_name: 模型名称
@@ -44,16 +45,13 @@ def get_embedding_model(model_name: str = "BAAI/bge-m3"):
     Returns:
         SentenceTransformer 实例
     """
-    if _model_cache["embedding"] is None:
-        logger.info(f"🤖 [首次加载] Embedding 模型：{model_name}")
-        start = time.time()
-        from sentence_transformers import SentenceTransformer
-        _model_cache["embedding"] = SentenceTransformer(model_name)
-        elapsed = time.time() - start
-        logger.info(f"⏱️  [性能] Embedding 模型加载耗时：{elapsed:.2f}秒")
-    else:
-        logger.info(f"✅ [缓存命中] 使用已加载的 Embedding 模型：{model_name}")
-    return _model_cache["embedding"]
+    logger.info(f"🤖 [首次加载] Embedding 模型：{model_name}")
+    start = time.time()
+    from sentence_transformers import SentenceTransformer
+    model = SentenceTransformer(model_name)
+    elapsed = time.time() - start
+    logger.info(f"⏱️  [性能] Embedding 模型加载耗时：{elapsed:.2f}秒")
+    return model
 
 class VectorRetriever:
     """ChromaDB 向量检索器"""
@@ -99,6 +97,72 @@ class VectorRetriever:
             logger.error(f"[VectorRetriever] ❌ 初始化失败：{e}", exc_info=True)
             raise
     
+    def get_by_metadata(self, 
+                       metadata_filter: Dict[str, Any],
+                       limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        纯元数据过滤检索（直接召回，不进行相似度计算）
+        
+        Args:
+            metadata_filter: 元数据过滤条件，如 {'source': '鲁迅短篇小说集：呐喊.pdf', 'chapter': '自序'}
+            limit: 返回结果数量限制
+        
+        Returns:
+            符合条件的文档列表
+        """
+        try:
+            logger.info(f"[VectorRetriever] 🔍 执行纯元数据过滤：{metadata_filter}")
+            
+            # 构建 where 过滤条件（使用 $and 操作符合并多个条件）
+            if len(metadata_filter) == 1:
+                # 单条件直接使用
+                key, value = list(metadata_filter.items())[0]
+                chroma_key = "source" if key == "pdf_filename" else key
+                if isinstance(value, list):
+                    where_condition = {chroma_key: {"$in": value}}
+                else:
+                    where_condition = {chroma_key: {"$eq": value}}
+            else:
+                # 多条件使用 $and 操作符
+                where_clauses = []
+                for key, value in metadata_filter.items():
+                    chroma_key = "source" if key == "pdf_filename" else key
+                    if isinstance(value, list):
+                        where_clauses.append({chroma_key: {"$in": value}})
+                    else:
+                        where_clauses.append({chroma_key: {"$eq": value}})
+                where_condition = {"$and": where_clauses}
+            
+            # 使用 query 方法进行元数据过滤查询（query 支持复杂的 where 条件）
+            # 使用一个零向量作为查询向量（不影响结果，因为我们只关心元数据过滤）
+            import numpy as np
+            dummy_embedding = np.zeros(1024).tolist()  # 使用 1024 维零向量
+            
+            results = self.collection.query(
+                query_embeddings=[dummy_embedding],
+                n_results=limit,
+                where=where_condition,
+                include=["documents", "metadatas", "distances"]
+            )
+            
+            # 整理结果
+            matches = []
+            if results['ids'] and len(results['ids'][0]) > 0:
+                for i in range(len(results['ids'][0])):
+                    match = {
+                        'id': results['ids'][0][i],
+                        'document': results['documents'][0][i],
+                        'metadata': results['metadatas'][0][i]
+                    }
+                    matches.append(match)
+            
+            logger.info(f"[VectorRetriever] ✅ 元数据过滤完成，找到 {len(matches)} 条结果")
+            return matches
+            
+        except Exception as e:
+            logger.error(f"❌ 元数据过滤检索失败：{e}")
+            return []
+
     def search(self, 
          query_embedding: List[float], 
          top_k: int = 5, 
@@ -119,11 +183,14 @@ class VectorRetriever:
             if metadata_filter:
                 where_condition = {}
                 for key, value in metadata_filter.items():
+                    # 🔥 兼容 pdf_filename 和 source 字段名
+                    chroma_key = "source" if key == "pdf_filename" else key
+                    
                     # ChromaDB 支持 $eq, $ne, $in, $nin 等操作符
                     if isinstance(value, list):
-                        where_condition[key] = {"$in": value}
+                        where_condition[chroma_key] = {"$in": value}
                     else:
-                        where_condition[key] = {"$eq": value}
+                        where_condition[chroma_key] = {"$eq": value}
                 
                 logger.info(f"[VectorRetriever] 🔍 使用元数据过滤：{where_condition}")
             
@@ -215,10 +282,13 @@ class KeywordRetriever:
             if metadata_filter:
                 where_condition = {}
                 for key, value in metadata_filter.items():
+                    # 🔥 兼容 pdf_filename 和 source 字段名
+                    chroma_key = "source" if key == "pdf_filename" else key
+                    
                     if isinstance(value, list):
-                        where_condition[key] = {"$in": value}
+                        where_condition[chroma_key] = {"$in": value}
                     else:
-                        where_condition[key] = {"$eq": value}
+                        where_condition[chroma_key] = {"$eq": value}
                 
                 logger.info(f"[KeywordRetriever] 🔍 使用元数据过滤：{where_condition}")
             
@@ -290,6 +360,10 @@ class HybridRetriever:
             logger.error(f"[HybridRetriever] KeywordRetriever 初始化失败：{e}", exc_info=True)
             raise
         
+        # 初始化 MMR 检索器（lambda=0.7 平衡相关性和多样性）
+        self.mmr_retriever = MMRRetriever(lambda_param=0.7)
+        logger.info("[HybridRetriever] MMRRetriever 初始化成功")
+        
         # 嵌入模型（用于将查询文本向量化）
         self.embedding_model_name = os.getenv("EMBEDDING_MODEL", 
                                                "intfloat/multilingual-e5-large")
@@ -308,6 +382,22 @@ class HybridRetriever:
         model = self._get_embedding_model()
         embedding = model.encode(query, normalize_embeddings=True)
         return embedding.tolist()
+    
+    def get_by_metadata(self, 
+                        metadata_filter: Dict[str, Any],
+                        limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        纯元数据过滤检索（直接召回，不进行相似度计算、重排序等复杂操作）
+        
+        Args:
+            metadata_filter: 元数据过滤条件，如 {'source': '鲁迅短篇小说集：呐喊.pdf', 'chapter': '自序'}
+            limit: 返回结果数量限制
+        
+        Returns:
+            符合条件的文档列表
+        """
+        logger.info(f"[HybridRetriever] 🔍 执行纯元数据过滤检索")
+        return self.vector_retriever.get_by_metadata(metadata_filter, limit)
     
     def tokenize_query(self, query: str) -> List[str]:
         """
@@ -337,9 +427,11 @@ class HybridRetriever:
                vector_weight: float = 0.7,
                keyword_weight: float = 0.3,
                use_mmr: bool = True,
-               metadata_filter: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+               metadata_filter: Optional[Dict[str, Any]] = None,
+               query_type: Optional[str] = None,
+               use_reranker: bool = False) -> List[Dict[str, Any]]:
         """
-        混合检索（支持 MMR 多样性优化和元数据过滤）
+        混合检索（支持 MMR 多样性优化、元数据过滤和 Cross-Encoder 重排序）
         
         Args:
             query: 查询文本
@@ -349,10 +441,32 @@ class HybridRetriever:
             keyword_weight: 关键词检索权重（默认 0.3）
             use_mmr: 是否使用 MMR 多样性优化（默认 True）
             metadata_filter: 元数据过滤条件（可选）
+            query_type: 查询类型（可选），用于自动选择策略
+            use_reranker: 是否使用 Cross-Encoder 重排序（默认 False）
             
         Returns:
             排序后的混合检索结果
         """
+        # 🔥 如果提供了 query_type，自动选择策略
+        if query_type:
+            from .retrieval_strategies import StrategySelector
+            strategy = StrategySelector.select_strategy(query_type, keywords or [])
+            logger.info(f"[HybridRetriever] 🎯 使用策略: {strategy.description}")
+            logger.info(f"   权重配置: vector={strategy.vector_weight}, keyword={strategy.keyword_weight}")
+            logger.info(f"   Top-K: {strategy.top_k}, Rerank Top-K: {strategy.rerank_top_k}")
+            
+            # 应用策略配置（如果用户未指定权重）
+            if vector_weight == 0.7 and keyword_weight == 0.3:  # 使用默认值时才应用策略
+                vector_weight = strategy.vector_weight
+                keyword_weight = strategy.keyword_weight
+            
+            # 如果策略要求重排序，启用它
+            if strategy.use_reranker:
+                use_reranker = True
+            
+            # 如果用户未指定 top_k，使用策略的 top_k
+            if top_k == 5:  # 默认值
+                top_k = strategy.top_k
         # 1. 🔥 扩大候选集（为 MMR 做准备）
         # 🔥 从 6 倍改回 3 倍，配合 Query Expansion 使用
         candidate_multiplier = 3 if use_mmr else 1
@@ -418,14 +532,71 @@ class HybridRetriever:
                 reverse=True
             )
         
-        # 5. 🔥 MMR 多样性选择（如果启用）- 暂时禁用
+        # 5. 🔥 MMR 多样性选择（如果启用）
         if use_mmr and len(fused_results) > top_k:
-            logger.info(f"[HybridRetriever] ⚠️ MMR 功能暂未启用")
-            # TODO: 需要实现 MMRRetriever 类
-            pass
+            logger.info(f"[HybridRetriever] 🔥 开始执行 MMR 多样性选择...")
+            logger.info(f"   候选文档数：{len(fused_results)}, 目标数量：{top_k}")
+            
+            # 提取查询向量
+            query_embedding = self.embed_query(query)
+            
+            # 提取候选文档的向量
+            candidate_embeddings = []
+            for doc in fused_results:
+                embedding = doc.get('embedding', [])
+                # 检查 embedding 是否有效（处理 numpy 数组和列表）
+                if embedding is not None and len(embedding) > 0:
+                    # 如果是 numpy 数组，转换为列表
+                    if hasattr(embedding, 'tolist'):
+                        embedding = embedding.tolist()
+                    candidate_embeddings.append(embedding)
+                else:
+                    # 如果没有向量，使用零向量占位（会导致该文档被降级）
+                    logger.warning(f"[HybridRetriever] ⚠️ 文档 {doc.get('id', 'unknown')} 缺少 embedding")
+                    candidate_embeddings.append([0.0] * len(query_embedding))
+            
+            # 检查是否有有效的向量
+            if all(emb == [0.0] * len(query_embedding) for emb in candidate_embeddings):
+                logger.warning("[HybridRetriever] ⚠️ 所有候选文档都缺少 embedding，跳过 MMR")
+            else:
+                # 执行 MMR 选择
+                try:
+                    mmr_selected = self.mmr_retriever.mmr_select(
+                        query_embedding=query_embedding,
+                        candidates=fused_results,
+                        candidate_embeddings=candidate_embeddings,
+                        k=top_k
+                    )
+                    
+                    logger.info(f"[HybridRetriever] ✅ MMR 选择完成，从 {len(fused_results)} 个候选中选择了 {len(mmr_selected)} 个多样化文档")
+                    fused_results = mmr_selected
+                except Exception as e:
+                    logger.error(f"[HybridRetriever] ❌ MMR 选择失败：{e}，退化为 Top-K")
+                    # 出错时退化为简单的 Top-K
+                    pass
         
-        # 6. 直接返回 Top-K
-        return fused_results[:top_k]
+        # 6. 🔥 可选：Cross-Encoder 重排序
+        if use_reranker and len(fused_results) > 0:
+            from .reranker import CrossEncoderReranker
+            reranker = CrossEncoderReranker()
+            
+            # 确定重排序后的返回数量
+            rerank_top_k = top_k
+            if query_type:
+                from .retrieval_strategies import StrategySelector
+                strategy = StrategySelector.select_strategy(query_type, keywords or [])
+                rerank_top_k = min(strategy.rerank_top_k, len(fused_results))
+            else:
+                rerank_top_k = min(top_k, len(fused_results))
+            
+            logger.info(f"[HybridRetriever] 🔄 开始 Cross-Encoder 重排序... ({len(fused_results)} → {rerank_top_k})")
+            fused_results = reranker.rerank(query, fused_results, top_k=rerank_top_k)
+            logger.info(f"[HybridRetriever] ✅ 重排序完成")
+        else:
+            # 直接返回 Top-K
+            fused_results = fused_results[:top_k]
+        
+        return fused_results
 
 
 def test_retrieval(retriever: HybridRetriever, test_cases: List[Dict[str, Any]]):
