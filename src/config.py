@@ -79,7 +79,7 @@ class Settings(BaseSettings):
         # 设置 VECTOR_DB_PATH 默认值
         if not self.VECTOR_DB_PATH:
             project_root = Path(__file__).resolve().parents[1]
-            self.VECTOR_DB_PATH = str(project_root / "data" / "vector_database")
+            self.VECTOR_DB_PATH = str(project_root / "src" / "data" / "vector_database")
         
         # 设置 CORS_ORIGINS
         if not self.CORS_ORIGINS:

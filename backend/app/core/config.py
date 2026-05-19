@@ -3,8 +3,13 @@
 使用 Pydantic Settings 进行配置管理，支持环境变量覆盖
 """
 
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
+
+
+# 项目根目录路径（从当前文件向上三级：backend/app/core/config.py -> 项目根目录）
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 class SessionManagerConfig(BaseSettings):
@@ -18,8 +23,8 @@ class SessionManagerConfig(BaseSettings):
     max_cache_size: int = 100
     ttl_days: int = 30
     
-    # 存储路径
-    session_data_path: str = "../src/data/sessions"
+    # 存储路径 - 使用绝对路径
+    session_data_path: str = str(PROJECT_ROOT / "src" / "data" / "sessions")
     
     # Redis 配置
     redis_url: str = "redis://localhost:6379"
@@ -44,9 +49,9 @@ class RAGConfig(BaseSettings):
     embedding_model: str = "intfloat/multilingual-e5-large"
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
 
-    # 路径配置
-    vector_db_path: str = "src/data/vector_database"
-    session_data_path: str = "../src/data/sessions"
+    # 路径配置 - 使用绝对路径
+    vector_db_path: str = str(PROJECT_ROOT / "src" / "data" / "vector_database")
+    session_data_path: str = str(PROJECT_ROOT / "src" / "data" / "sessions")
 
     model_config = SettingsConfigDict(env_prefix="RAG_")
 
@@ -59,14 +64,14 @@ class AppSettings(BaseSettings):
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com/v1"
     DEEPSEEK_MODEL: str = "deepseek-chat"
 
-    # 向量数据库
-    VECTOR_DB_PATH: str = "../src/data/vector_database"
+    # 向量数据库 - 使用绝对路径
+    VECTOR_DB_PATH: str = str(PROJECT_ROOT / "src" / "data" / "vector_database")
     EMBEDDING_MODEL: str = "intfloat/multilingual-e5-large"
 
     # 角色系统（v2.0）
     DEFAULT_ROLE_ID: str = "humorous_butler"
 
-    model_config = SettingsConfigDict(env_file="../../.env", extra="allow")
+    model_config = SettingsConfigDict(env_file=str(PROJECT_ROOT / ".env"), extra="allow")
 
     def __getattr__(self, name: str):
         try:
